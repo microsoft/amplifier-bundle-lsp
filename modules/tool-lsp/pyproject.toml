@@ -1,0 +1,13 @@
+[project]
+name = "amplifier-module-tool-lsp"
+version = "0.1.0"
+description = "Generic LSP tool for Amplifier - configuration-driven language support"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.entry-points."amplifier.modules"]
+tool-lsp = "amplifier_module_tool_lsp:mount"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

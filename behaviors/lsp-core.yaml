@@ -1,0 +1,20 @@
+bundle:
+  name: behavior-lsp-core
+
+tools:
+  - module: tool-lsp
+    source: git+https://github.com/microsoft/amplifier-bundle-lsp@main#subdirectory=modules/tool-lsp
+    config:
+      # Empty! Language bundles fill via deep merge
+      languages: {}
+      # Optional shared settings
+      timeout_seconds: 30
+      max_retries: 3
+
+context:
+  include:
+    - lsp:context/lsp-general.md
+
+agents:
+  include:
+    - lsp:code-navigator
