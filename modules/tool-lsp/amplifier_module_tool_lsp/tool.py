@@ -34,8 +34,14 @@ class LspTool:
         self._languages = config.get("languages", {})
         self._timeout = config.get("timeout_seconds", 30)
         self._max_retries = config.get("max_retries", 3)
+        self._max_results = config.get("max_results", 50)  # Prevent context overflow
+        self._max_hover_chars = config.get("max_hover_chars", 6000)  # Limit hover content size
         self._server_manager = LspServerManager()
-        self._operations = LspOperations(self._server_manager)
+        self._operations = LspOperations(
+            self._server_manager,
+            max_results=self._max_results,
+            max_hover_chars=self._max_hover_chars,
+        )
 
     @property
     def name(self) -> str:
