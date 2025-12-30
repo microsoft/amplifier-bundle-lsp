@@ -14,6 +14,16 @@ You have access to the LSP (Language Server Protocol) tool for code intelligence
 
 **Rule of thumb**: Use LSP for navigation and understanding, grep for searching.
 
+## When to Reach for LSP First
+
+**Before grepping for a symbol, ask yourself:**
+- "Am I looking for usages of this specific function/class?" → `findReferences`
+- "Where is this defined?" → `goToDefinition`
+- "What does this return/accept?" → `hover`
+- "What calls this function?" → `incomingCalls`
+
+LSP gives **semantic** results (actual code relationships). Grep gives **text** matches (may include comments, strings, similar names). For code navigation, semantic wins.
+
 ## Most Useful Operations (Start Here)
 
 1. **hover** - Get type info + docstring at a position (most reliable)
