@@ -214,17 +214,39 @@ class LspServerManager:
         key = self._server_key(language, workspace)
 
         if key not in self._servers:
-            # Check if server is installed
+            # Check if server is installed AND working
             install_check = server_config.get("install_check")
             if install_check:
                 try:
-                    subprocess.run(
+                    result = subprocess.run(
                         install_check,
                         capture_output=True,
                         check=True,
+                        timeout=10,
                     )
-                except (subprocess.CalledProcessError, FileNotFoundError):
-                    raise RuntimeError(f"{language} LSP server not installed. {server_config.get('install_hint', '')}")
+                except FileNotFoundError:
+                    raise RuntimeError(
+                        f"{language} LSP server not installed. "
+                        f"{server_config.get('install_hint', '')}"
+                    )
+                except subprocess.CalledProcessError as e:
+                    # Check for common issues like broken shebang
+                    stderr = e.stderr.decode() if e.stderr else ""
+                    if "bad interpreter" in stderr or "No such file or directory" in stderr:
+                        raise RuntimeError(
+                            f"{language} LSP server has a broken installation (bad interpreter). "
+                            f"Try reinstalling: {server_config.get('install_hint', '')} "
+                            f"If installed via Homebrew, try: npm install -g pyright"
+                        )
+                    raise RuntimeError(
+                        f"{language} LSP server check failed: {stderr or e}. "
+                        f"{server_config.get('install_hint', '')}"
+                    )
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError(
+                        f"{language} LSP server check timed out. Server may be broken. "
+                        f"Try reinstalling: {server_config.get('install_hint', '')}"
+                    )
 
             # Create new server
             server = await LspServer.create(
