@@ -203,6 +203,108 @@ class LspServerManager:
         """Create unique key for server instance."""
         return f"{language}:{workspace}"
 
+    def _validate_server_installation(
+        self,
+        language: str,
+        install_check: list[str],
+        server_config: dict[str, Any],
+    ) -> None:
+        """
+        Validate that the LSP server is properly installed and working.
+        
+        Provides detailed diagnostics for common installation issues like
+        stale wrapper scripts, broken shebangs, and shadowed installations.
+        """
+        import shutil
+        
+        cmd_name = install_check[0]  # e.g., "pyright"
+        install_hint = server_config.get("install_hint", "")
+        
+        # Find where the command resolves to
+        cmd_path = shutil.which(cmd_name)
+        if not cmd_path:
+            raise RuntimeError(
+                f"{language} LSP server not found in PATH. "
+                f"{install_hint}"
+            )
+        
+        # Check if it's a wrapper script pointing to a non-existent location
+        try:
+            with open(cmd_path, 'r') as f:
+                first_line = f.readline().strip()
+                content_start = f.read(500)  # Read a bit more to check for paths
+            
+            # Check for stale wrapper scripts
+            if first_line.startswith('#!'):
+                # It's a script - check if it points to missing paths
+                if '/opt/homebrew/Cellar/' in content_start or '/usr/local/Cellar/' in content_start:
+                    # Likely a stale wrapper from old Homebrew install
+                    raise RuntimeError(
+                        f"{language} LSP server at {cmd_path} appears to be a stale wrapper script "
+                        f"pointing to a removed Homebrew installation. "
+                        f"To fix, remove the stale wrapper and reinstall:\n"
+                        f"  rm {cmd_path}\n"
+                        f"  {install_hint}"
+                    )
+        except (OSError, UnicodeDecodeError):
+            # Binary file or can't read - that's fine, proceed with execution check
+            pass
+        
+        # Actually run the install check command
+        try:
+            result = subprocess.run(
+                install_check,
+                capture_output=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.decode() if result.stderr else ""
+                stdout = result.stdout.decode() if result.stdout else ""
+                output = stderr or stdout
+                
+                # Check for "Cannot find module" error (stale npm wrapper)
+                if "Cannot find module" in output:
+                    raise RuntimeError(
+                        f"{language} LSP server at {cmd_path} has a broken installation. "
+                        f"Error: {output.strip()}\n"
+                        f"This usually means a stale wrapper script. To fix:\n"
+                        f"  rm {cmd_path}\n"
+                        f"  Also check: rm {cmd_path.replace(cmd_name, cmd_name + '-langserver')} 2>/dev/null\n"
+                        f"  Then reinstall: {install_hint}"
+                    )
+                
+                # Check for bad interpreter
+                if "bad interpreter" in output or "No such file or directory" in output:
+                    raise RuntimeError(
+                        f"{language} LSP server at {cmd_path} has a broken shebang. "
+                        f"Error: {output.strip()}\n"
+                        f"To fix, remove and reinstall:\n"
+                        f"  rm {cmd_path}\n"
+                        f"  {install_hint}"
+                    )
+                
+                # Generic failure with full output
+                raise RuntimeError(
+                    f"{language} LSP server check failed.\n"
+                    f"Command: {' '.join(install_check)}\n"
+                    f"Path: {cmd_path}\n"
+                    f"Output: {output.strip()}\n"
+                    f"{install_hint}"
+                )
+                
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"{language} LSP server not found. "
+                f"Attempted path: {cmd_path}\n"
+                f"{install_hint}"
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"{language} LSP server check timed out (>10s). "
+                f"Path: {cmd_path}\n"
+                f"The server may be broken. Try reinstalling: {install_hint}"
+            )
+
     async def get_server(
         self,
         language: str,
@@ -217,36 +319,11 @@ class LspServerManager:
             # Check if server is installed AND working
             install_check = server_config.get("install_check")
             if install_check:
-                try:
-                    result = subprocess.run(
-                        install_check,
-                        capture_output=True,
-                        check=True,
-                        timeout=10,
-                    )
-                except FileNotFoundError:
-                    raise RuntimeError(
-                        f"{language} LSP server not installed. "
-                        f"{server_config.get('install_hint', '')}"
-                    )
-                except subprocess.CalledProcessError as e:
-                    # Check for common issues like broken shebang
-                    stderr = e.stderr.decode() if e.stderr else ""
-                    if "bad interpreter" in stderr or "No such file or directory" in stderr:
-                        raise RuntimeError(
-                            f"{language} LSP server has a broken installation (bad interpreter). "
-                            f"Try reinstalling: {server_config.get('install_hint', '')} "
-                            f"If installed via Homebrew, try: npm install -g pyright"
-                        )
-                    raise RuntimeError(
-                        f"{language} LSP server check failed: {stderr or e}. "
-                        f"{server_config.get('install_hint', '')}"
-                    )
-                except subprocess.TimeoutExpired:
-                    raise RuntimeError(
-                        f"{language} LSP server check timed out. Server may be broken. "
-                        f"Try reinstalling: {server_config.get('install_hint', '')}"
-                    )
+                self._validate_server_installation(
+                    language=language,
+                    install_check=install_check,
+                    server_config=server_config,
+                )
 
             # Create new server
             server = await LspServer.create(
