@@ -9,6 +9,11 @@ from .server import LspServer
 DEFAULT_MAX_RESULTS = 50
 DEFAULT_MAX_HOVER_CHARS = 6000
 
+# Per-operation limits for operations that can return arrays
+LIMIT_GO_TO_DEFINITION = 20  # Overloads/partial classes
+LIMIT_GO_TO_IMPLEMENTATION = 30  # Interface implementations
+LIMIT_PREPARE_CALL_HIERARCHY = 10  # Call hierarchy items
+
 
 class LspOperations:
     """Implements LSP operations."""
@@ -101,7 +106,9 @@ class LspOperations:
             "message": "hover: Complex format (not truncated)"
         }
 
-    def _truncate_results(self, results: list | None, operation: str) -> dict:
+    def _truncate_results(
+        self, results: list | None, operation: str, max_results: int | None = None
+    ) -> dict:
         """Truncate list results and return with metadata.
         
         Returns a dict with:
@@ -109,6 +116,11 @@ class LspOperations:
         - total_count: Original count before truncation
         - truncated: Whether results were truncated
         - message: Human-readable summary
+        
+        Args:
+            results: The list of results to truncate
+            operation: Name of the operation for message formatting
+            max_results: Optional per-operation limit (defaults to self._max_results)
         """
         if results is None:
             return {
@@ -122,12 +134,13 @@ class LspOperations:
             # Non-list results pass through unchanged
             return results
         
+        limit = max_results if max_results is not None else self._max_results
         total = len(results)
-        truncated = total > self._max_results
+        truncated = total > limit
         
         if truncated:
-            results = results[:self._max_results]
-            message = f"{operation}: Showing {self._max_results} of {total} results (truncated to prevent context overflow)"
+            results = results[:limit]
+            message = f"{operation}: Showing {limit} of {total} results (truncated to prevent context overflow)"
         else:
             message = f"{operation}: {total} result{'s' if total != 1 else ''}"
         
@@ -186,10 +199,14 @@ class LspOperations:
         self, server: LspServer, file_path: str, line: int, character: int, query: str | None
     ) -> Any:
         """Find where a symbol is defined."""
-        return await server.request(
+        result = await server.request(
             "textDocument/definition",
             self._text_document_position(file_path, line, character),
         )
+        # LSP can return Location | Location[] | LocationLink[]
+        if isinstance(result, list):
+            return self._truncate_results(result, "goToDefinition", LIMIT_GO_TO_DEFINITION)
+        return result  # Single location, no truncation needed
 
     async def _op_findReferences(  # noqa: N802 - matches LSP operation name
         self, server: LspServer, file_path: str, line: int, character: int, query: str | None
@@ -232,26 +249,36 @@ class LspOperations:
         self, server: LspServer, file_path: str, line: int, character: int, query: str | None
     ) -> Any:
         """Find implementations of an interface/abstract method."""
-        return await server.request(
+        result = await server.request(
             "textDocument/implementation",
             self._text_document_position(file_path, line, character),
         )
+        # LSP can return Location | Location[] | LocationLink[]
+        if isinstance(result, list):
+            return self._truncate_results(result, "goToImplementation", LIMIT_GO_TO_IMPLEMENTATION)
+        return result  # Single location, no truncation needed
 
     async def _op_prepareCallHierarchy(  # noqa: N802 - matches LSP operation name
         self, server: LspServer, file_path: str, line: int, character: int, query: str | None
     ) -> Any:
         """Prepare call hierarchy at position."""
-        return await server.request(
+        result = await server.request(
             "textDocument/prepareCallHierarchy",
             self._text_document_position(file_path, line, character),
         )
+        # LSP returns CallHierarchyItem[] | null
+        if isinstance(result, list):
+            return self._truncate_results(result, "prepareCallHierarchy", LIMIT_PREPARE_CALL_HIERARCHY)
+        return result  # null case, no truncation needed
 
     async def _op_incomingCalls(  # noqa: N802 - matches LSP operation name
         self, server: LspServer, file_path: str, line: int, character: int, query: str | None
     ) -> Any:
         """Find functions that call the function at position."""
         # First get the call hierarchy item
-        items = await self._op_prepareCallHierarchy(server, file_path, line, character, query)
+        hierarchy_result = await self._op_prepareCallHierarchy(server, file_path, line, character, query)
+        # Handle both dict (truncated) and raw result formats
+        items = hierarchy_result.get("results", []) if isinstance(hierarchy_result, dict) else hierarchy_result
         if not items:
             return self._truncate_results([], "incomingCalls")
 
@@ -266,7 +293,9 @@ class LspOperations:
     ) -> Any:
         """Find functions called by the function at position."""
         # First get the call hierarchy item
-        items = await self._op_prepareCallHierarchy(server, file_path, line, character, query)
+        hierarchy_result = await self._op_prepareCallHierarchy(server, file_path, line, character, query)
+        # Handle both dict (truncated) and raw result formats
+        items = hierarchy_result.get("results", []) if isinstance(hierarchy_result, dict) else hierarchy_result
         if not items:
             return self._truncate_results([], "outgoingCalls")
 
