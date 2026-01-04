@@ -53,7 +53,17 @@ class LspTool:
         return (
             f"Interact with Language Server Protocol servers for code intelligence. "
             f"Configured languages: {', '.join(configured)}. "
-            f"Operations: {', '.join(self.OPERATIONS)}"
+            f"Operations: {', '.join(self.OPERATIONS)}\n\n"
+            f"WHEN TO USE LSP vs GREP:\n"
+            f"- Find all callers of a function: incomingCalls (semantic) vs grep (may match strings/comments)\n"
+            f"- Find where symbol is defined: goToDefinition (precise) vs grep (multiple matches)\n"
+            f"- Get type info or signature: hover (full type data) - grep cannot do this\n"
+            f"- Find text pattern anywhere: use grep instead (faster for text search)\n"
+            f"- Search across many files: use grep instead (faster for bulk search)\n\n"
+            f"RULE: Use LSP for semantic code understanding (types, references, call chains). "
+            f"Use grep for text pattern matching.\n\n"
+            f"For complex multi-step navigation tasks, delegate to lsp:code-navigator or "
+            f"lsp-python:python-code-intel agents."
         )
 
     @property
