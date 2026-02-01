@@ -3,4 +3,5 @@ bundle:
   version: 0.1.0
   description: Core LSP support for code intelligence
 
-default_behavior: lsp-core
+includes:
+  - bundle: lsp:behaviors/lsp-core.yaml
