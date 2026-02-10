@@ -16,7 +16,7 @@ from .server import LspServerManager
 class LspTool:
     """Generic LSP tool - all language knowledge from configuration."""
 
-    # Supported operations (from Claude Code's LSP tool)
+    # Supported operations
     OPERATIONS = [
         "goToDefinition",
         "findReferences",
@@ -27,16 +27,54 @@ class LspTool:
         "prepareCallHierarchy",
         "incomingCalls",
         "outgoingCalls",
+        "prepareTypeHierarchy",
+        "supertypes",
+        "subtypes",
+        "diagnostics",
+        "rename",
+        "codeAction",
+        "inlayHints",
+        "customRequest",
     ]
+
+    # Operations that require line/character position params
+    POSITION_REQUIRED_OPS = {
+        "goToDefinition",
+        "findReferences",
+        "hover",
+        "goToImplementation",
+        "prepareCallHierarchy",
+        "incomingCalls",
+        "outgoingCalls",
+        "prepareTypeHierarchy",
+        "supertypes",
+        "subtypes",
+        "rename",
+        "codeAction",
+        "inlayHints",
+    }
+
+    # Operations added in Task 1 that are not yet implemented
+    _NOT_YET_IMPLEMENTED_OPS = {
+        "prepareTypeHierarchy",
+        "supertypes",
+        "subtypes",
+        "diagnostics",
+        "rename",
+        "codeAction",
+        "inlayHints",
+        "customRequest",
+    }
 
     def __init__(self, config: dict):
         """Initialize with configuration containing language definitions."""
         self._languages = config.get("languages", {})
         self._timeout = config.get("timeout_seconds", 30)
-        self._max_retries = config.get("max_retries", 3)
         self._max_results = config.get("max_results", 50)  # Prevent context overflow
-        self._max_hover_chars = config.get("max_hover_chars", 6000)  # Limit hover content size
-        self._server_manager = LspServerManager()
+        self._max_hover_chars = config.get(
+            "max_hover_chars", 6000
+        )  # Limit hover content size
+        self._server_manager = LspServerManager(timeout=float(self._timeout))
         self._operations = LspOperations(
             self._server_manager,
             max_results=self._max_results,
@@ -94,8 +132,30 @@ class LspTool:
                     "type": "string",
                     "description": "Search query for workspaceSymbol operation",
                 },
+                "newName": {
+                    "type": "string",
+                    "description": "New name for rename operation",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "End line for range-based operations (codeAction, inlayHints). 1-based.",
+                    "minimum": 1,
+                },
+                "end_character": {
+                    "type": "integer",
+                    "description": "End character for range-based operations. 1-based.",
+                    "minimum": 1,
+                },
+                "customMethod": {
+                    "type": "string",
+                    "description": "LSP method name for customRequest (e.g., 'rust-analyzer/expandMacro')",
+                },
+                "customParams": {
+                    "type": "object",
+                    "description": "Method-specific parameters for customRequest",
+                },
             },
-            "required": ["operation", "file_path", "line", "character"],
+            "required": ["operation", "file_path"],
         }
 
     def _detect_language(self, file_path: str) -> str | None:
@@ -126,8 +186,17 @@ class LspTool:
         """Execute an LSP operation."""
         operation = arguments.get("operation")
         file_path = arguments.get("file_path")
-        line = arguments.get("line", 1)
-        character = arguments.get("character", 1)
+        line = arguments.get("line")
+        character = arguments.get("character")
+
+        # Validate operation
+        if operation not in self.OPERATIONS:
+            return ToolResult(
+                success=False,
+                error={
+                    "message": f"Unknown operation: {operation}. Valid: {self.OPERATIONS}"
+                },
+            )
 
         # Validate required parameters
         if not file_path:
@@ -136,12 +205,28 @@ class LspTool:
                 error={"message": "file_path is required"},
             )
 
-        # Validate operation
-        if operation not in self.OPERATIONS:
+        # Validate position for operations that need it
+        if operation in self.POSITION_REQUIRED_OPS:
+            if line is None or character is None:
+                return ToolResult(
+                    success=False,
+                    error={
+                        "message": f"line and character position required for {operation}"
+                    },
+                )
+
+        # Return early for not-yet-implemented operations
+        if operation in self._NOT_YET_IMPLEMENTED_OPS:
             return ToolResult(
                 success=False,
-                error={"message": f"Unknown operation: {operation}. Valid: {self.OPERATIONS}"},
+                error={"message": f"Operation '{operation}' is not yet implemented"},
             )
+
+        # Default position values for operations that don't need them
+        if line is None:
+            line = 1
+        if character is None:
+            character = 1
 
         # Detect language from file extension
         language = self._detect_language(file_path)
@@ -172,7 +257,9 @@ class LspTool:
             install_hint = lang_config["server"].get("install_hint", "")
             return ToolResult(
                 success=False,
-                error={"message": f"Failed to start {language} LSP server: {e}. {install_hint}"},
+                error={
+                    "message": f"Failed to start {language} LSP server: {e}. {install_hint}"
+                },
             )
 
         # Execute the operation
@@ -187,7 +274,9 @@ class LspTool:
             )
             return ToolResult(success=True, output=result)
         except Exception as e:
-            return ToolResult(success=False, error={"message": f"LSP operation failed: {e}"})
+            return ToolResult(
+                success=False, error={"message": f"LSP operation failed: {e}"}
+            )
 
     async def cleanup(self):
         """Shutdown all LSP servers."""
