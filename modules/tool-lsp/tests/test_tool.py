@@ -189,30 +189,7 @@ class TestNewOperations:
     def test_original_ops_preserved(self, tool, op):
         assert op in tool.OPERATIONS
 
-    # customRequest, diagnostics, type hierarchy now implemented — only check the still-unimplemented ones
-    STILL_UNIMPLEMENTED_OPS = [
-        "codeAction",
-    ]
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("op", STILL_UNIMPLEMENTED_OPS)
-    async def test_new_ops_return_not_implemented(self, tool, op, tmp_path):
-        """Unimplemented ops should be accepted but return 'not yet implemented'."""
-        py_file = tmp_path / "test.py"
-        py_file.write_text("x = 1\n")
-        result = await tool.execute(
-            {
-                "operation": op,
-                "file_path": str(py_file),
-                "line": 1,
-                "character": 1,
-            }
-        )
-        assert result.success is False
-        assert (
-            "not yet implemented" in result.error["message"].lower()
-            or "not implemented" in result.error["message"].lower()
-        )
+    # All operations now implemented — no STILL_UNIMPLEMENTED_OPS remaining
 
 
 # ── Step 1.10: Remove dead max_retries config ────────────────────────────────

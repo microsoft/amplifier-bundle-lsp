@@ -55,9 +55,7 @@ class LspTool:
     }
 
     # Operations added in Task 1 that are not yet implemented
-    _NOT_YET_IMPLEMENTED_OPS = {
-        "codeAction",
-    }
+    _NOT_YET_IMPLEMENTED_OPS: set[str] = set()
 
     def __init__(self, config: dict):
         """Initialize with configuration containing language definitions."""

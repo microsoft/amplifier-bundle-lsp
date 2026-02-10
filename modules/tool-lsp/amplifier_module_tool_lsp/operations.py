@@ -927,3 +927,100 @@ class LspOperations:
         formatted["operation"] = "rename"
         formatted["new_name"] = new_name
         return formatted
+
+    def _diagnostic_in_range(self, diagnostic: dict, start: dict, end: dict) -> bool:
+        """Check if a diagnostic overlaps with the given range."""
+        d_range = diagnostic.get("range", {})
+        d_start = d_range.get("start", {})
+        d_end = d_range.get("end", {})
+        # Overlap: diagnostic starts before range ends AND diagnostic ends after range starts
+        return d_start.get("line", 0) <= end.get("line", 0) and d_end.get(
+            "line", 0
+        ) >= start.get("line", 0)
+
+    async def _op_codeAction(  # noqa: N802 - matches LSP operation name
+        self,
+        server: LspServer,
+        file_path: str,
+        line: int,
+        character: int,
+        query: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Get available code actions (fixes, refactorings) at a position or range."""
+        uri = Path(file_path).resolve().as_uri()
+
+        await self._open_document(server, file_path)
+
+        # Build range
+        start = {"line": line - 1, "character": character - 1}
+        end_line = kwargs.get("end_line")
+        end_char = kwargs.get("end_character")
+        if end_line and end_char:
+            end = {"line": end_line - 1, "character": end_char - 1}
+        else:
+            end = start  # Point range
+
+        # Get cached diagnostics for context
+        cached = server.get_cached_diagnostics(uri) or []
+        relevant = [d for d in cached if self._diagnostic_in_range(d, start, end)]
+
+        result = await server.request(
+            "textDocument/codeAction",
+            {
+                "textDocument": {"uri": uri},
+                "range": {"start": start, "end": end},
+                "context": {
+                    "diagnostics": relevant,
+                    "triggerKind": 1,  # Invoked (not automatic)
+                },
+            },
+        )
+
+        if not result:
+            return {
+                "actions": [],
+                "count": 0,
+                "message": "codeAction: No actions available at this position",
+            }
+
+        formatted = []
+        for action in result[:30]:  # Cap at 30 actions
+            entry = {
+                "title": action.get("title", ""),
+                "kind": action.get("kind", ""),
+                "is_preferred": action.get("isPreferred", False),
+            }
+
+            # If action has a direct edit, format it
+            if "edit" in action:
+                entry["edit"] = self._format_workspace_edit(
+                    action["edit"], action.get("title", "")
+                )
+
+            # If action has a command (server-side execution)
+            if "command" in action and "edit" not in action:
+                entry["has_command"] = True
+                entry["command_title"] = action["command"].get("title", "")
+
+            # How many diagnostics this fixes
+            if "diagnostics" in action:
+                entry["fixes_diagnostics"] = len(action["diagnostics"])
+
+            formatted.append(entry)
+
+        # Sort: preferred first, then quick fixes, then refactorings
+        formatted.sort(
+            key=lambda a: (
+                not a.get("is_preferred", False),
+                not a.get("kind", "").startswith("quickfix"),
+            )
+        )
+
+        return {
+            "actions": formatted,
+            "count": len(formatted),
+            "truncated": len(result) > 30,
+            "total_count": len(result),
+            "message": f"codeAction: {len(formatted)} action(s) available",
+        }
