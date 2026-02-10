@@ -16,24 +16,31 @@ from .server import LspServerManager
 class LspTool:
     """Generic LSP tool - all language knowledge from configuration."""
 
-    # Supported operations
+    # Supported operations (grouped by category)
     OPERATIONS = [
+        # Navigation
         "goToDefinition",
         "findReferences",
         "hover",
         "documentSymbol",
         "workspaceSymbol",
         "goToImplementation",
+        # Call hierarchy
         "prepareCallHierarchy",
         "incomingCalls",
         "outgoingCalls",
+        # Type hierarchy
         "prepareTypeHierarchy",
         "supertypes",
         "subtypes",
+        # Verification
         "diagnostics",
+        # Refactoring
         "rename",
         "codeAction",
+        # Inspection
         "inlayHints",
+        # Extensions
         "customRequest",
     ]
 
@@ -78,21 +85,36 @@ class LspTool:
 
     @property
     def description(self) -> str:
-        configured = list(self._languages.keys()) if self._languages else ["none"]
+        lang_names = ", ".join(self._languages.keys()) if self._languages else "none"
         return (
             f"Interact with Language Server Protocol servers for code intelligence. "
-            f"Configured languages: {', '.join(configured)}. "
-            f"Operations: {', '.join(self.OPERATIONS)}\n\n"
-            f"WHEN TO USE LSP vs GREP:\n"
-            f"- Find all callers of a function: incomingCalls (semantic) vs grep (may match strings/comments)\n"
-            f"- Find where symbol is defined: goToDefinition (precise) vs grep (multiple matches)\n"
-            f"- Get type info or signature: hover (full type data) - grep cannot do this\n"
-            f"- Find text pattern anywhere: use grep instead (faster for text search)\n"
-            f"- Search across many files: use grep instead (faster for bulk search)\n\n"
-            f"RULE: Use LSP for semantic code understanding (types, references, call chains). "
-            f"Use grep for text pattern matching.\n\n"
-            f"For complex multi-step navigation tasks, delegate to lsp:code-navigator or "
-            f"lsp-python:python-code-intel agents."
+            f"Configured languages: {lang_names}.\n\n"
+            "NAVIGATION operations:\n"
+            "  goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol,\n"
+            "  goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls\n\n"
+            "TYPE HIERARCHY operations:\n"
+            "  prepareTypeHierarchy, supertypes, subtypes\n\n"
+            "VERIFICATION operations:\n"
+            "  diagnostics - get compiler errors/warnings for a file\n\n"
+            "REFACTORING operations:\n"
+            "  rename - cross-file semantic rename (returns edits, does not apply)\n"
+            "  codeAction - suggested fixes and refactorings (returns edits)\n\n"
+            "INSPECTION operations:\n"
+            "  inlayHints - inferred types/parameter names for a range\n\n"
+            "EXTENSION operations:\n"
+            "  customRequest - send any server-specific LSP method\n\n"
+            "WHEN TO USE LSP vs GREP:\n"
+            "- Find callers of a function: incomingCalls (semantic) vs grep (matches strings/comments)\n"
+            "- Find where symbol is defined: goToDefinition (precise) vs grep (multiple matches)\n"
+            "- Get type info or signature: hover (full type data) - grep cannot do this\n"
+            "- Check for errors after editing: diagnostics - grep cannot do this\n"
+            "- Rename a symbol safely: rename (cross-file, semantic) vs grep (text-only, unsafe)\n"
+            "- Find text pattern anywhere: use grep instead (faster for text search)\n"
+            "- Search across many files: use grep instead (faster for bulk search)\n\n"
+            "RULE: Use LSP for semantic code understanding (types, references, call chains, "
+            "diagnostics, refactoring). Use grep for text pattern matching.\n\n"
+            "For complex multi-step navigation tasks, delegate to the appropriate "
+            "language-specific code-intel agent."
         )
 
     @property
@@ -103,7 +125,17 @@ class LspTool:
                 "operation": {
                     "type": "string",
                     "enum": self.OPERATIONS,
-                    "description": "The LSP operation to perform",
+                    "description": (
+                        "The LSP operation to perform. "
+                        "Navigation: goToDefinition, findReferences, hover, documentSymbol, "
+                        "workspaceSymbol, goToImplementation. "
+                        "Call hierarchy: prepareCallHierarchy, incomingCalls, outgoingCalls. "
+                        "Type hierarchy: prepareTypeHierarchy, supertypes, subtypes. "
+                        "Verification: diagnostics. "
+                        "Refactoring: rename (needs newName), codeAction. "
+                        "Inspection: inlayHints (needs end_line, end_character). "
+                        "Extension: customRequest (needs customMethod)."
+                    ),
                 },
                 "file_path": {
                     "type": "string",
@@ -125,25 +157,25 @@ class LspTool:
                 },
                 "newName": {
                     "type": "string",
-                    "description": "New name for rename operation",
+                    "description": "New name for rename operation (required for rename)",
                 },
                 "end_line": {
                     "type": "integer",
-                    "description": "End line for range-based operations (codeAction, inlayHints). 1-based.",
+                    "description": "End line for range operations: codeAction, inlayHints (1-based)",
                     "minimum": 1,
                 },
                 "end_character": {
                     "type": "integer",
-                    "description": "End character for range-based operations. 1-based.",
+                    "description": "End character for range operations: codeAction, inlayHints (1-based)",
                     "minimum": 1,
                 },
                 "customMethod": {
                     "type": "string",
-                    "description": "LSP method name for customRequest (e.g., 'rust-analyzer/expandMacro')",
+                    "description": "LSP method name for customRequest (e.g., 'server/someExtension')",
                 },
                 "customParams": {
                     "type": "object",
-                    "description": "Method-specific parameters for customRequest",
+                    "description": "Parameters object for customRequest",
                 },
             },
             "required": ["operation", "file_path"],
