@@ -21,6 +21,9 @@ LIMIT_PREPARE_TYPE_HIERARCHY = 10  # Type hierarchy items
 class LspOperations:
     """Implements LSP operations."""
 
+    # Operations that don't require file_path (no _open_document needed)
+    _FILE_PATH_OPTIONAL_OPS = {"customRequest", "workspaceSymbol"}
+
     def __init__(
         self,
         server_manager,
@@ -205,20 +208,28 @@ class LspOperations:
         if not method:
             raise ValueError(f"Unknown operation: {operation}")
 
-        # customRequest has a different signature — file_path is optional
-        if operation == "customRequest":
+        # File-path-optional operations: don't need _open_document
+        if operation in self._FILE_PATH_OPTIONAL_OPS:
             return await method(
                 server,
                 file_path=file_path,
                 line=line,
                 character=character,
+                query=query,
                 **kwargs,
             )
 
         # All other operations require file_path — open document first
         assert file_path is not None  # Caller should validate
         await self._open_document(server, file_path)
-        return await method(server, file_path, line, character, query, **kwargs)
+        try:
+            return await method(server, file_path, line, character, query, **kwargs)
+        except Exception as e:
+            if "file not found" in str(e).lower() and file_path:
+                # Retry once after brief delay — server may still be processing didOpen
+                await asyncio.sleep(0.5)
+                return await method(server, file_path, line, character, query, **kwargs)
+            raise
 
     async def _open_document(self, server: LspServer, file_path: str):
         """Notify server about open/changed document with tracking.
@@ -247,6 +258,8 @@ class LspOperations:
                     }
                 },
             )
+            # Brief delay after first open — server may need time to index
+            await asyncio.sleep(0.1)
         elif self._open_documents[uri] != content_hash:
             # Content changed — send didChange with full replacement
             self._doc_versions[uri] += 1

@@ -183,11 +183,14 @@ class LspServer:
                         # Request/response correlation
                         future = self._pending.pop(message["id"])
                         if "error" in message:
-                            future.set_exception(
-                                Exception(
-                                    message["error"].get("message", "Unknown error")
-                                )
+                            err = message["error"]
+                            err_msg = (
+                                err.get("message")
+                                or f"LSP error code {err.get('code', 'unknown')}"
                             )
+                            if err.get("code") == -32601:
+                                err_msg = f"Method not supported by server: {err_msg}"
+                            future.set_exception(Exception(err_msg))
                         else:
                             future.set_result(message.get("result"))
                     elif "method" in message and "id" in message:

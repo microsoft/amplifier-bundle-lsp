@@ -64,6 +64,9 @@ class LspTool:
     # Operations added in Task 1 that are not yet implemented
     _NOT_YET_IMPLEMENTED_OPS: set[str] = set()
 
+    # Operations that don't require file_path (use first configured language + cwd)
+    FILE_PATH_OPTIONAL_OPS = {"customRequest", "workspaceSymbol"}
+
     def __init__(self, config: dict):
         """Initialize with configuration containing language definitions."""
         self._languages = config.get("languages", {})
@@ -230,8 +233,8 @@ class LspTool:
                 output="customRequest requires 'customMethod' parameter (e.g., 'rust-analyzer/expandMacro')",
             )
 
-        # Validate required parameters — file_path is optional for customRequest
-        if not file_path and operation != "customRequest":
+        # Validate required parameters — file_path is optional for some operations
+        if not file_path and operation not in self.FILE_PATH_OPTIONAL_OPS:
             return ToolResult(
                 success=False,
                 error={"message": "file_path is required"},
@@ -267,8 +270,8 @@ class LspTool:
         if character is None:
             character = 1
 
-        # Handle customRequest without file_path — use first configured language
-        if operation == "customRequest" and not file_path:
+        # Handle file_path-optional operations — use first configured language + cwd
+        if operation in self.FILE_PATH_OPTIONAL_OPS and not file_path:
             if not self._languages:
                 return ToolResult(
                     success=False,
@@ -330,8 +333,10 @@ class LspTool:
             )
             return ToolResult(success=True, output=result)
         except Exception as e:
+            error_msg = str(e) or type(e).__name__
             return ToolResult(
-                success=False, error={"message": f"LSP operation failed: {e}"}
+                success=False,
+                error={"message": f"LSP operation failed: {error_msg}"},
             )
 
     async def cleanup(self):
