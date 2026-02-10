@@ -44,6 +44,32 @@ class LspTool:
         "customRequest",
     ]
 
+    # Base operations - universally supported by all LSP servers, always shown
+    BASE_OPERATIONS = [
+        "goToDefinition",
+        "findReferences",
+        "hover",
+        "documentSymbol",
+        "workspaceSymbol",
+        "goToImplementation",
+        "prepareCallHierarchy",
+        "incomingCalls",
+        "outgoingCalls",
+    ]
+
+    # Extended operations that require capability declaration.
+    # If a language config has no capabilities map at all, all are assumed supported.
+    EXTENDED_OPS = {
+        "prepareTypeHierarchy",
+        "supertypes",
+        "subtypes",
+        "diagnostics",
+        "rename",
+        "codeAction",
+        "inlayHints",
+        "customRequest",
+    }
+
     # Operations that require line/character position params
     POSITION_REQUIRED_OPS = {
         "goToDefinition",
@@ -84,63 +110,191 @@ class LspTool:
         # Wire cleanup: when servers shut down, clear document tracking to bound memory
         self._server_manager._on_shutdown = self._operations.clear_document_tracking
 
+    def _get_available_operations(self) -> list[str]:
+        """Get operations available based on configured language capabilities.
+
+        Base operations (9) are always available. Extended operations only appear
+        if at least one configured language declares them in its capabilities map.
+        If a language has no capabilities map, all operations are assumed available.
+        """
+        if not self._languages:
+            return list(self.OPERATIONS)  # No languages configured, show all
+
+        # Collect union of all capabilities across configured languages
+        available_extended: set[str] = set()
+        has_any_capabilities_config = False
+
+        for lang_config in self._languages.values():
+            caps = lang_config.get("capabilities")
+            if caps is None:
+                # No capabilities map = assume all supported (backward compatible)
+                return list(self.OPERATIONS)
+            has_any_capabilities_config = True
+            for op_name, enabled in caps.items():
+                if enabled:
+                    available_extended.add(op_name)
+
+        if not has_any_capabilities_config:
+            return list(self.OPERATIONS)
+
+        # Build filtered list: base ops + enabled extended ops (preserving OPERATIONS order)
+        result = list(self.BASE_OPERATIONS)
+        for op in self.OPERATIONS:
+            if op in self.EXTENDED_OPS and op in available_extended:
+                result.append(op)
+
+        return result
+
     @property
     def name(self) -> str:
         return "LSP"
 
     @property
     def description(self) -> str:
+        available = set(self._get_available_operations())
         lang_names = ", ".join(self._languages.keys()) if self._languages else "none"
-        return (
+
+        sections = [
             f"Interact with Language Server Protocol servers for code intelligence. "
-            f"Configured languages: {lang_names}.\n\n"
+            f"Configured languages: {lang_names}.",
+            # Navigation — always present (base ops)
             "NAVIGATION operations:\n"
             "  goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol,\n"
-            "  goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls\n\n"
-            "TYPE HIERARCHY operations:\n"
-            "  prepareTypeHierarchy, supertypes, subtypes\n\n"
-            "VERIFICATION operations:\n"
-            "  diagnostics - get compiler errors/warnings for a file\n\n"
-            "REFACTORING operations:\n"
-            "  rename - cross-file semantic rename (returns edits, does not apply)\n"
-            "  codeAction - suggested fixes and refactorings (returns edits)\n\n"
-            "INSPECTION operations:\n"
-            "  inlayHints - inferred types/parameter names for a range\n\n"
-            "EXTENSION operations:\n"
-            "  customRequest - send any server-specific LSP method\n\n"
-            "WHEN TO USE LSP vs GREP:\n"
-            "- Find callers of a function: incomingCalls (semantic) vs grep (matches strings/comments)\n"
-            "- Find where symbol is defined: goToDefinition (precise) vs grep (multiple matches)\n"
-            "- Get type info or signature: hover (full type data) - grep cannot do this\n"
-            "- Check for errors after editing: diagnostics - grep cannot do this\n"
-            "- Rename a symbol safely: rename (cross-file, semantic) vs grep (text-only, unsafe)\n"
-            "- Find text pattern anywhere: use grep instead (faster for text search)\n"
-            "- Search across many files: use grep instead (faster for bulk search)\n\n"
-            "RULE: Use LSP for semantic code understanding (types, references, call chains, "
-            "diagnostics, refactoring). Use grep for text pattern matching.\n\n"
+            "  goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls",
+        ]
+
+        # Type hierarchy — only if any type hierarchy ops available
+        type_hier_ops = [
+            op
+            for op in ["prepareTypeHierarchy", "supertypes", "subtypes"]
+            if op in available
+        ]
+        if type_hier_ops:
+            sections.append(f"TYPE HIERARCHY operations:\n  {', '.join(type_hier_ops)}")
+
+        # Verification
+        if "diagnostics" in available:
+            sections.append(
+                "VERIFICATION operations:\n"
+                "  diagnostics - get compiler errors/warnings for a file"
+            )
+
+        # Refactoring
+        refactor_lines = []
+        if "rename" in available:
+            refactor_lines.append(
+                "  rename - cross-file semantic rename (returns edits, does not apply)"
+            )
+        if "codeAction" in available:
+            refactor_lines.append(
+                "  codeAction - suggested fixes and refactorings (returns edits)"
+            )
+        if refactor_lines:
+            sections.append("REFACTORING operations:\n" + "\n".join(refactor_lines))
+
+        # Inspection
+        if "inlayHints" in available:
+            sections.append(
+                "INSPECTION operations:\n"
+                "  inlayHints - inferred types/parameter names for a range"
+            )
+
+        # Extension
+        if "customRequest" in available:
+            sections.append(
+                "EXTENSION operations:\n"
+                "  customRequest - send any server-specific LSP method"
+            )
+
+        # LSP vs GREP guidance
+        grep_lines = [
+            "WHEN TO USE LSP vs GREP:",
+            "- Find callers of a function: incomingCalls (semantic) vs grep (matches strings/comments)",
+            "- Find where symbol is defined: goToDefinition (precise) vs grep (multiple matches)",
+            "- Get type info or signature: hover (full type data) - grep cannot do this",
+        ]
+        if "diagnostics" in available:
+            grep_lines.append(
+                "- Check for errors after editing: diagnostics - grep cannot do this"
+            )
+        if "rename" in available:
+            grep_lines.append(
+                "- Rename a symbol safely: rename (cross-file, semantic) vs grep (text-only, unsafe)"
+            )
+        grep_lines.extend(
+            [
+                "- Find text pattern anywhere: use grep instead (faster for text search)",
+                "- Search across many files: use grep instead (faster for bulk search)",
+            ]
+        )
+        sections.append("\n".join(grep_lines))
+
+        # RULE
+        rule_parts = ["types", "references", "call chains"]
+        if "diagnostics" in available:
+            rule_parts.append("diagnostics")
+        if "rename" in available or "codeAction" in available:
+            rule_parts.append("refactoring")
+        sections.append(
+            f"RULE: Use LSP for semantic code understanding ({', '.join(rule_parts)}). "
+            "Use grep for text pattern matching."
+        )
+
+        # Delegation
+        sections.append(
             "For complex multi-step navigation tasks, delegate to the appropriate "
             "language-specific code-intel agent."
         )
 
+        return "\n\n".join(sections)
+
+    def _build_operation_description(self, available: set[str]) -> str:
+        """Build the operation enum description based on available operations."""
+        parts = [
+            "The LSP operation to perform.",
+            "Navigation: goToDefinition, findReferences, hover, documentSymbol, "
+            "workspaceSymbol, goToImplementation.",
+            "Call hierarchy: prepareCallHierarchy, incomingCalls, outgoingCalls.",
+        ]
+
+        type_hier = [
+            op
+            for op in ["prepareTypeHierarchy", "supertypes", "subtypes"]
+            if op in available
+        ]
+        if type_hier:
+            parts.append(f"Type hierarchy: {', '.join(type_hier)}.")
+
+        if "diagnostics" in available:
+            parts.append("Verification: diagnostics.")
+
+        refactor = []
+        if "rename" in available:
+            refactor.append("rename (needs newName)")
+        if "codeAction" in available:
+            refactor.append("codeAction")
+        if refactor:
+            parts.append(f"Refactoring: {', '.join(refactor)}.")
+
+        if "inlayHints" in available:
+            parts.append("Inspection: inlayHints (needs end_line, end_character).")
+
+        if "customRequest" in available:
+            parts.append("Extension: customRequest (needs customMethod).")
+
+        return " ".join(parts)
+
     @property
     def input_schema(self) -> dict:
+        available = self._get_available_operations()
+        available_set = set(available)
         return {
             "type": "object",
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": self.OPERATIONS,
-                    "description": (
-                        "The LSP operation to perform. "
-                        "Navigation: goToDefinition, findReferences, hover, documentSymbol, "
-                        "workspaceSymbol, goToImplementation. "
-                        "Call hierarchy: prepareCallHierarchy, incomingCalls, outgoingCalls. "
-                        "Type hierarchy: prepareTypeHierarchy, supertypes, subtypes. "
-                        "Verification: diagnostics. "
-                        "Refactoring: rename (needs newName), codeAction. "
-                        "Inspection: inlayHints (needs end_line, end_character). "
-                        "Extension: customRequest (needs customMethod)."
-                    ),
+                    "enum": available,
+                    "description": self._build_operation_description(available_set),
                 },
                 "file_path": {
                     "type": "string",
@@ -222,7 +376,17 @@ class LspTool:
             return ToolResult(
                 success=False,
                 error={
-                    "message": f"Unknown operation: {operation}. Valid: {self.OPERATIONS}"
+                    "message": f"Unknown operation: {operation}. Valid: {self._get_available_operations()}"
+                },
+            )
+
+        # Check if operation is available for configured languages
+        available = self._get_available_operations()
+        if operation not in available:
+            return ToolResult(
+                success=False,
+                error={
+                    "message": f"Operation '{operation}' is not supported by the configured language server(s). Available: {available}"
                 },
             )
 
