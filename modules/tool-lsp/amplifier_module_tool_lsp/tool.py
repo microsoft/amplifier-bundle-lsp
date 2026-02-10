@@ -189,8 +189,15 @@ class LspTool:
                 },
             )
 
-        # Validate required parameters
-        if not file_path:
+        # Per-operation parameter validation
+        if operation == "customRequest" and not arguments.get("customMethod"):
+            return ToolResult(
+                success=False,
+                output="customRequest requires 'customMethod' parameter (e.g., 'rust-analyzer/expandMacro')",
+            )
+
+        # Validate required parameters — file_path is optional for customRequest
+        if not file_path and operation != "customRequest":
             return ToolResult(
                 success=False,
                 error={"message": "file_path is required"},
@@ -206,7 +213,7 @@ class LspTool:
                     },
                 )
 
-        # Per-operation parameter validation
+        # Per-operation parameter validation (after position check)
         if operation == "rename" and not arguments.get("newName"):
             return ToolResult(
                 success=False,
@@ -226,22 +233,34 @@ class LspTool:
         if character is None:
             character = 1
 
-        # Detect language from file extension
-        language = self._detect_language(file_path)
-        if not language:
-            configured = list(self._languages.keys()) or ["none"]
-            return ToolResult(
-                success=False,
-                error={
-                    "message": f"No LSP support configured for {file_path}. Configured languages: {', '.join(configured)}"
-                },
-            )
+        # Handle customRequest without file_path — use first configured language
+        if operation == "customRequest" and not file_path:
+            if not self._languages:
+                return ToolResult(
+                    success=False,
+                    error={"message": "No languages configured"},
+                )
+            language = next(iter(self._languages))
+            lang_config = self._languages[language]
+            workspace = Path.cwd()
+        else:
+            # Normal flow: detect language from file extension
+            assert file_path is not None  # Guaranteed by file_path check above
+            language = self._detect_language(file_path)
+            if not language:
+                configured = list(self._languages.keys()) or ["none"]
+                return ToolResult(
+                    success=False,
+                    error={
+                        "message": f"No LSP support configured for {file_path}. Configured languages: {', '.join(configured)}"
+                    },
+                )
 
-        # Get language configuration
-        lang_config = self._languages[language]
+            # Get language configuration
+            lang_config = self._languages[language]
 
-        # Find workspace root
-        workspace = self._find_workspace(file_path, lang_config)
+            # Find workspace root
+            workspace = self._find_workspace(file_path, lang_config)
 
         # Get or create server for this workspace
         try:
