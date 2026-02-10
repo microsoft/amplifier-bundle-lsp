@@ -272,6 +272,8 @@ class LspTool:
                 newName=arguments.get("newName"),
                 customMethod=arguments.get("customMethod"),
                 customParams=arguments.get("customParams"),
+                end_line=arguments.get("end_line"),
+                end_character=arguments.get("end_character"),
             )
             return ToolResult(success=True, output=result)
         except Exception as e:
