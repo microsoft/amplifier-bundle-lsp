@@ -189,10 +189,15 @@ class TestNewOperations:
     def test_original_ops_preserved(self, tool, op):
         assert op in tool.OPERATIONS
 
+    # customRequest, diagnostics, type hierarchy now implemented — only check the still-unimplemented ones
+    STILL_UNIMPLEMENTED_OPS = [
+        "codeAction",
+    ]
+
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("op", NEW_OPS)
+    @pytest.mark.parametrize("op", STILL_UNIMPLEMENTED_OPS)
     async def test_new_ops_return_not_implemented(self, tool, op, tmp_path):
-        """New ops should be accepted but return 'not yet implemented'."""
+        """Unimplemented ops should be accepted but return 'not yet implemented'."""
         py_file = tmp_path / "test.py"
         py_file.write_text("x = 1\n")
         result = await tool.execute(
@@ -203,10 +208,6 @@ class TestNewOperations:
                 "character": 1,
             }
         )
-        # Should return an error about not yet implemented (or similar)
-        # We accept either success=False with "not yet implemented" message
-        # OR if it gets past validation and hits the server, it would fail differently.
-        # The spec says: execute() returns "not yet implemented" for them.
         assert result.success is False
         assert (
             "not yet implemented" in result.error["message"].lower()
@@ -242,3 +243,75 @@ class TestTimeoutWiring:
         # The server manager should have the timeout available
         assert hasattr(tool._server_manager, "_timeout")
         assert tool._server_manager._timeout == 45
+
+
+# ── Task 7: customRequest tool-level validation ─────────────────────────────
+
+
+class TestCustomRequestValidation:
+    """customRequest should validate customMethod and handle optional file_path."""
+
+    @pytest.mark.asyncio
+    async def test_custom_request_not_in_unimplemented(self, tool):
+        """customRequest should NOT be in _NOT_YET_IMPLEMENTED_OPS."""
+        assert "customRequest" not in tool._NOT_YET_IMPLEMENTED_OPS
+
+    @pytest.mark.asyncio
+    async def test_missing_custom_method_returns_error(self, tool, tmp_path):
+        """customRequest without customMethod should return clear error."""
+        py_file = tmp_path / "test.py"
+        py_file.write_text("x = 1\n")
+        result = await tool.execute(
+            {
+                "operation": "customRequest",
+                "file_path": str(py_file),
+            }
+        )
+        assert result.success is False
+        assert "customMethod" in result.output or "customMethod" in str(result.error)
+
+    @pytest.mark.asyncio
+    async def test_no_file_path_accepted(self, tool):
+        """customRequest should accept calls without file_path."""
+        # It should NOT fail with "file_path is required" error.
+        # It may fail trying to start server, but that's a different error.
+        result = await tool.execute(
+            {
+                "operation": "customRequest",
+                "customMethod": "test/method",
+            }
+        )
+        # Should NOT get "file_path is required" error
+        if not result.success and result.error:
+            assert "file_path is required" not in result.error.get("message", "")
+
+    @pytest.mark.asyncio
+    async def test_no_file_path_no_languages_returns_error(self):
+        """customRequest without file_path and no languages configured → error."""
+        empty_tool = LspTool({"languages": {}})
+        result = await empty_tool.execute(
+            {
+                "operation": "customRequest",
+                "customMethod": "test/method",
+            }
+        )
+        assert result.success is False
+        combined = (str(result.output) + str(result.error)).lower()
+        assert "no languages" in combined
+
+    @pytest.mark.asyncio
+    async def test_no_file_path_uses_first_language(self, tool):
+        """customRequest without file_path should use first configured language."""
+        # This will fail when trying to start the server (no real LSP),
+        # but should get past file_path validation and language detection.
+        result = await tool.execute(
+            {
+                "operation": "customRequest",
+                "customMethod": "test/method",
+            }
+        )
+        # Should NOT fail with language detection or file_path errors
+        if not result.success and result.error:
+            msg = result.error.get("message", "")
+            assert "file_path is required" not in msg
+            assert "No LSP support configured" not in msg

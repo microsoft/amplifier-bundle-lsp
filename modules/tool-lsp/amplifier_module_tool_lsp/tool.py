@@ -56,14 +56,7 @@ class LspTool:
 
     # Operations added in Task 1 that are not yet implemented
     _NOT_YET_IMPLEMENTED_OPS = {
-        "prepareTypeHierarchy",
-        "supertypes",
-        "subtypes",
-        "diagnostics",
-        "rename",
         "codeAction",
-        "inlayHints",
-        "customRequest",
     }
 
     def __init__(self, config: dict):
@@ -215,6 +208,13 @@ class LspTool:
                     },
                 )
 
+        # Per-operation parameter validation
+        if operation == "rename" and not arguments.get("newName"):
+            return ToolResult(
+                success=False,
+                error={"message": "rename requires 'newName' parameter"},
+            )
+
         # Return early for not-yet-implemented operations
         if operation in self._NOT_YET_IMPLEMENTED_OPS:
             return ToolResult(
@@ -271,6 +271,9 @@ class LspTool:
                 line=line,
                 character=character,
                 query=arguments.get("query"),
+                newName=arguments.get("newName"),
+                customMethod=arguments.get("customMethod"),
+                customParams=arguments.get("customParams"),
             )
             return ToolResult(success=True, output=result)
         except Exception as e:
