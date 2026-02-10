@@ -281,9 +281,10 @@ class LspServer:
 class LspServerManager:
     """Manages LSP server instances per workspace."""
 
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 30.0, on_shutdown: Any = None):
         self._servers: dict[str, LspServer] = {}
         self._timeout = timeout
+        self._on_shutdown = on_shutdown
 
     def _server_key(self, language: str, workspace: Path) -> str:
         """Create unique key for server instance."""
@@ -426,7 +427,10 @@ class LspServerManager:
         return self._servers[key]
 
     async def shutdown_all(self):
-        """Shutdown all managed servers."""
+        """Shutdown all managed servers and clear caches."""
         for server in self._servers.values():
             await server.shutdown()
         self._servers.clear()
+        # Notify operations layer to clear document tracking
+        if self._on_shutdown:
+            self._on_shutdown()

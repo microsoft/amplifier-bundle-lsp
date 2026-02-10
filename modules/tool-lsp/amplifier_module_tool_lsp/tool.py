@@ -78,6 +78,8 @@ class LspTool:
             max_results=self._max_results,
             max_hover_chars=self._max_hover_chars,
         )
+        # Wire cleanup: when servers shut down, clear document tracking to bound memory
+        self._server_manager._on_shutdown = self._operations.clear_document_tracking
 
     @property
     def name(self) -> str:
@@ -178,7 +180,7 @@ class LspTool:
                     "description": "Parameters object for customRequest",
                 },
             },
-            "required": ["operation", "file_path"],
+            "required": ["operation"],
         }
 
     def _detect_language(self, file_path: str) -> str | None:

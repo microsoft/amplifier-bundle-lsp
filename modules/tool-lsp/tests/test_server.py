@@ -1,4 +1,10 @@
-"""Tests for server.py Task 1 changes."""
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportReturnType=false, reportOptionalMemberAccess=false
+"""Tests for server.py Task 1 changes.
+
+Note: pyright errors are suppressed because test fakes (FakeProcess, FakeStdin,
+FakeStdout) intentionally violate asyncio.subprocess.Process type contracts.
+Tests pass at runtime; the fakes are minimal stubs, not full protocol impls.
+"""
 
 import asyncio
 import json

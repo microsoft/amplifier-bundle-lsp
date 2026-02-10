@@ -33,6 +33,16 @@ class LspOperations:
         self._open_documents: dict[str, int] = {}  # URI → content hash
         self._doc_versions: dict[str, int] = {}  # URI → version number
 
+    def clear_document_tracking(self) -> None:
+        """Clear document tracking state.
+
+        Called when servers are shut down to prevent unbounded memory growth
+        in long-running sessions. The next operation will re-open documents
+        as needed.
+        """
+        self._open_documents.clear()
+        self._doc_versions.clear()
+
     def _truncate_hover(self, result: dict | None) -> dict:
         """Truncate hover content and return with metadata.
 
@@ -136,8 +146,13 @@ class LspOperations:
             }
 
         if not isinstance(results, list):
-            # Non-list results pass through unchanged
-            return results
+            # Non-list results (e.g., single Location) wrapped in standard envelope
+            return {
+                "results": results,
+                "total_count": 1,
+                "truncated": False,
+                "message": f"{operation}: 1 result",
+            }
 
         limit = max_results if max_results is not None else self._max_results
         total = len(results)

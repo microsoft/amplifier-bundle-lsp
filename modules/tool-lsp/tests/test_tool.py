@@ -29,11 +29,11 @@ def tool():
 
 
 class TestSchemaRequired:
-    """line and character should NOT be in required list."""
+    """Only operation should be in required list (file_path optional for customRequest)."""
 
-    def test_required_only_operation_and_file_path(self, tool):
+    def test_required_only_operation(self, tool):
         schema = tool.input_schema
-        assert schema["required"] == ["operation", "file_path"]
+        assert schema["required"] == ["operation"]
 
     def test_line_still_in_properties(self, tool):
         props = tool.input_schema["properties"]
