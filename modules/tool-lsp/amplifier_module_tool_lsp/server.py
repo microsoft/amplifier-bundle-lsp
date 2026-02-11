@@ -531,7 +531,7 @@ class LspServerManager:
     STATE_DIR = Path.home() / ".amplifier" / "lsp-servers"
 
     def __init__(self, timeout: float = 30.0, on_shutdown: Any = None):
-        self._servers: dict[str, LspServer] = {}
+        self._servers: dict[str, LspServer | ProxyLspServer] = {}
         self._timeout = timeout
         self._on_shutdown = on_shutdown
         self._cleanup_stale_states()
@@ -801,31 +801,115 @@ class LspServerManager:
         workspace: Path,
         server_config: dict[str, Any],
         init_options: dict[str, Any],
-    ) -> LspServer:
-        """Get or create an LSP server for the workspace."""
+    ) -> LspServer | ProxyLspServer:
+        """Get or create an LSP server for the workspace.
+
+        For lifecycle: session — direct subprocess (current behavior).
+        For lifecycle: persistent/timeout — connect to persistent proxy.
+        """
         key = self._server_key(language, workspace)
+        lifecycle = server_config.get("lifecycle", "session")
 
-        if key not in self._servers:
-            # Check if server is installed AND working
-            install_check = server_config.get("install_check")
-            if install_check:
-                self._validate_server_installation(
-                    language=language,
-                    install_check=install_check,
-                    server_config=server_config,
-                )
+        if key in self._servers:
+            server = self._servers[key]
+            # For proxy servers, verify connection is still alive
+            if isinstance(server, ProxyLspServer):
+                if not self._is_port_connectable(server._port, timeout=1.0):
+                    del self._servers[key]  # Stale — reconnect
+                else:
+                    return server
+            else:
+                return server
 
-            # Create new server
-            server = await LspServer.create(
-                language=language,
-                workspace=workspace,
-                command=server_config["command"],
-                init_options=init_options,
-                timeout=self._timeout,
+        # Route based on lifecycle
+        if lifecycle in ("persistent", "timeout"):
+            server = await self._get_or_create_proxy_server(
+                language, workspace, server_config, init_options
             )
-            self._servers[key] = server
+        else:
+            server = await self._get_direct_server(
+                language, workspace, server_config, init_options
+            )
 
-        return self._servers[key]
+        self._servers[key] = server
+        return server
+
+    async def _get_direct_server(
+        self,
+        language: str,
+        workspace: Path,
+        server_config: dict[str, Any],
+        init_options: dict[str, Any],
+    ) -> LspServer:
+        """Start a direct LSP server subprocess (session lifecycle)."""
+        # Check if server is installed AND working
+        install_check = server_config.get("install_check")
+        if install_check:
+            self._validate_server_installation(
+                language=language,
+                install_check=install_check,
+                server_config=server_config,
+            )
+
+        # Create new server
+        return await LspServer.create(
+            language=language,
+            workspace=workspace,
+            command=server_config["command"],
+            init_options=init_options,
+            timeout=self._timeout,
+        )
+
+    async def _get_or_create_proxy_server(
+        self,
+        language: str,
+        workspace: Path,
+        server_config: dict[str, Any],
+        init_options: dict[str, Any],
+    ) -> ProxyLspServer:
+        """Connect to an existing proxy or start a new one."""
+        # Check for existing proxy
+        state = self._read_state(language, workspace)
+        if state:
+            try:
+                return await ProxyLspServer.connect(
+                    language=language,
+                    workspace=workspace,
+                    port=state["port"],
+                    init_options=init_options,
+                    timeout=self._timeout,
+                )
+            except Exception:
+                # Connection failed despite state file existing — clean up and start fresh
+                self._remove_state_file(self._state_file_path(language, workspace))
+
+        # No existing proxy — validate installation first
+        install_check = server_config.get("install_check")
+        if install_check:
+            self._validate_server_installation(
+                language=language,
+                install_check=install_check,
+                server_config=server_config,
+            )
+
+        # Start new proxy
+        idle_timeout = server_config.get("idle_timeout", 300)
+        state = await self._start_proxy(
+            language=language,
+            workspace=workspace,
+            server_config=server_config,
+            init_options=init_options,
+            idle_timeout=idle_timeout,
+        )
+
+        # Connect to the new proxy
+        return await ProxyLspServer.connect(
+            language=language,
+            workspace=workspace,
+            port=state["port"],
+            init_options=init_options,
+            timeout=self._timeout,
+        )
 
     async def shutdown_all(self):
         """Shutdown all managed servers and clear caches."""
