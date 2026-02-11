@@ -9,8 +9,11 @@ event loop registers process termination before returning.
 
 import asyncio
 import contextlib
+import hashlib
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -307,10 +310,164 @@ class LspServer:
 class LspServerManager:
     """Manages LSP server instances per workspace."""
 
+    STATE_DIR = Path.home() / ".amplifier" / "lsp-servers"
+
     def __init__(self, timeout: float = 30.0, on_shutdown: Any = None):
         self._servers: dict[str, LspServer] = {}
         self._timeout = timeout
         self._on_shutdown = on_shutdown
+        self._cleanup_stale_states()
+
+    # ── State file registry ──────────────────────────────────────────────
+
+    @staticmethod
+    def _compute_state_key(language: str, workspace: Path) -> str:
+        """Compute state file key: {language}-{hash8}."""
+        canonical = os.path.realpath(str(workspace))
+        hash8 = hashlib.sha256(canonical.encode()).hexdigest()[:8]
+        return f"{language}-{hash8}"
+
+    @staticmethod
+    def _state_file_path(language: str, workspace: Path) -> Path:
+        """Get the full path to a state file."""
+        key = LspServerManager._compute_state_key(language, workspace)
+        return LspServerManager.STATE_DIR / f"{key}.json"
+
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        """Check if a process with the given PID is still running."""
+        try:
+            os.kill(pid, 0)  # Signal 0 = check existence, don't actually signal
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    @staticmethod
+    def _is_port_connectable(port: int, timeout: float = 2.0) -> bool:
+        """Check if a TCP port is accepting connections on localhost."""
+        import socket
+
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+                return True
+        except (ConnectionRefusedError, TimeoutError, OSError):
+            return False
+
+    @staticmethod
+    def _remove_state_file(state_path: Path) -> None:
+        """Remove a state file, ignoring errors."""
+        try:
+            state_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _read_state(self, language: str, workspace: Path) -> dict | None:
+        """Read and validate a proxy state file.
+
+        Returns the state dict if the proxy is alive and reachable, None otherwise.
+        Cleans up stale state files automatically.
+        """
+        state_path = self._state_file_path(language, workspace)
+        if not state_path.exists():
+            return None
+
+        try:
+            state = json.loads(state_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            # Corrupt or unreadable state file — clean up
+            self._remove_state_file(state_path)
+            return None
+
+        # Validate PID is alive
+        proxy_pid = state.get("proxy_pid")
+        if not proxy_pid or not self._is_pid_alive(proxy_pid):
+            self._remove_state_file(state_path)
+            return None
+
+        # Validate TCP port is connectable
+        port = state.get("port")
+        if not port or not self._is_port_connectable(port):
+            self._remove_state_file(state_path)
+            return None
+
+        return state
+
+    def _cleanup_stale_states(self) -> None:
+        """Remove state files for dead proxies. Called on startup."""
+        if not self.STATE_DIR.exists():
+            return
+
+        for state_file in self.STATE_DIR.glob("*.json"):
+            try:
+                state = json.loads(state_file.read_text())
+                proxy_pid = state.get("proxy_pid")
+                if proxy_pid and not self._is_pid_alive(proxy_pid):
+                    state_file.unlink(missing_ok=True)
+            except (json.JSONDecodeError, OSError):
+                # Corrupt file — remove it
+                try:
+                    state_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    async def _start_proxy(
+        self,
+        language: str,
+        workspace: Path,
+        server_config: dict,
+        init_options: dict,
+        idle_timeout: int = 300,
+    ) -> dict:
+        """Start a new proxy process and wait for it to be ready.
+
+        Returns the state dict once the proxy is accepting connections.
+        """
+        command = server_config["command"]
+
+        # Ensure state directory exists
+        self.STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Launch proxy as detached process
+        proxy_args = [
+            sys.executable,
+            "-m",
+            "amplifier_module_tool_lsp.proxy",
+            "--language",
+            language,
+            "--workspace",
+            str(workspace),
+            "--command",
+            json.dumps(command),
+            "--init-options",
+            json.dumps(init_options),
+            "--idle-timeout",
+            str(idle_timeout),
+            "--state-dir",
+            str(self.STATE_DIR),
+        ]
+
+        subprocess.Popen(
+            proxy_args,
+            start_new_session=True,  # Detach from parent process group
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Wait for proxy to write state file and start accepting connections
+        state_path = self._state_file_path(language, workspace)
+        for _ in range(60):  # Wait up to 30 seconds (60 * 0.5s)
+            await asyncio.sleep(0.5)
+            if state_path.exists():
+                state = self._read_state(language, workspace)
+                if state:
+                    return state
+
+        raise RuntimeError(
+            f"LSP proxy for {language} at {workspace} failed to start within 30 seconds"
+        )
+
+    # ── Server management ────────────────────────────────────────────────
 
     def _server_key(self, language: str, workspace: Path) -> str:
         """Create unique key for server instance."""
