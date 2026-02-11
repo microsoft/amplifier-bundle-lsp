@@ -728,3 +728,292 @@ class TestServerHealthMonitoring:
 
         assert hasattr(LspProxyServer, "_monitor_server")
         assert asyncio.iscoroutinefunction(LspProxyServer._monitor_server)
+
+
+# ── Init caching flow (integration-style) ────────────────────────────────────────
+
+
+class TestInitCachingFlow:
+    """Integration-style tests verifying proxy init caching and reconnection."""
+
+    def _make_proxy(self):
+        """Create a proxy instance with mocked I/O for testing forwarding methods."""
+        from amplifier_module_tool_lsp.proxy import LspProxyServer
+
+        proxy = LspProxyServer.__new__(LspProxyServer)
+        proxy._init_result = None
+        proxy._initialized = False
+        proxy._pending_init_id = None
+        proxy._running = True
+
+        # Track what gets written to the server
+        proxy._server_written = []
+        mock_server_writer = MagicMock()
+        mock_server_writer.write = MagicMock(
+            side_effect=lambda data: proxy._server_written.append(data)
+        )
+        mock_server_writer.drain = AsyncMock()
+        proxy._server_writer = mock_server_writer
+
+        return proxy
+
+    def _make_client_writer(self):
+        """Create a mock client writer that captures written data."""
+        written = []
+        writer = MagicMock()
+        writer.write = MagicMock(side_effect=lambda data: written.append(data))
+        writer.drain = AsyncMock()
+        return writer, written
+
+    @pytest.mark.asyncio
+    async def test_first_initialize_forwarded_and_id_tracked(self):
+        """First initialize request should be forwarded to server with ID tracked."""
+        from amplifier_module_tool_lsp.proxy import make_lsp_message
+
+        proxy = self._make_proxy()
+
+        init_msg = make_lsp_message(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        )
+
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(init_msg)
+        client_reader.feed_eof()
+
+        client_writer, client_written = self._make_client_writer()
+
+        await proxy._forward_client_to_server(client_reader, client_writer)
+
+        # Should have forwarded to server
+        assert len(proxy._server_written) == 1
+        # Should have tracked the pending init ID
+        assert proxy._pending_init_id == 1
+        # Should NOT have written anything back to client
+        assert len(client_written) == 0
+
+    @pytest.mark.asyncio
+    async def test_init_response_cached_by_id_correlation(self):
+        """InitializeResult should be cached using request ID correlation."""
+        from amplifier_module_tool_lsp.proxy import make_lsp_message
+
+        proxy = self._make_proxy()
+        proxy._pending_init_id = 42
+
+        # Server sends response with matching ID
+        init_response = make_lsp_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 42,
+                "result": {"capabilities": {"hoverProvider": True}},
+            }
+        )
+
+        server_reader = asyncio.StreamReader()
+        server_reader.feed_data(init_response)
+        server_reader.feed_eof()
+        proxy._server_reader = server_reader
+
+        client_writer, client_written = self._make_client_writer()
+
+        await proxy._forward_server_to_client(client_writer)
+
+        assert proxy._initialized is True
+        assert proxy._init_result == {"capabilities": {"hoverProvider": True}}
+        # Should still have forwarded the response to client
+        assert len(client_written) == 1
+
+    @pytest.mark.asyncio
+    async def test_non_init_response_not_cached_despite_capabilities(self):
+        """A response with capabilities but non-matching ID must NOT be cached."""
+        from amplifier_module_tool_lsp.proxy import make_lsp_message
+
+        proxy = self._make_proxy()
+        proxy._pending_init_id = 42  # Expecting ID 42
+
+        # A different response (ID 99) that happens to have "capabilities"
+        wrong_response = make_lsp_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 99,
+                "result": {"capabilities": {"something": True}},
+            }
+        )
+
+        server_reader = asyncio.StreamReader()
+        server_reader.feed_data(wrong_response)
+        server_reader.feed_eof()
+        proxy._server_reader = server_reader
+
+        client_writer, _ = self._make_client_writer()
+
+        await proxy._forward_server_to_client(client_writer)
+
+        # Should NOT have been cached — wrong ID
+        assert proxy._initialized is False
+        assert proxy._init_result is None
+
+    @pytest.mark.asyncio
+    async def test_second_client_gets_cached_init_no_server_forward(self):
+        """Second client should get cached InitializeResult without server roundtrip."""
+        from amplifier_module_tool_lsp.proxy import make_lsp_message, parse_lsp_body
+
+        proxy = self._make_proxy()
+        # Simulate: first client already completed init
+        proxy._initialized = True
+        proxy._init_result = {
+            "capabilities": {"hoverProvider": True, "definitionProvider": True}
+        }
+
+        init_msg = make_lsp_message(
+            {"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": {}}
+        )
+
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(init_msg)
+        client_reader.feed_eof()
+
+        client_writer, client_written = self._make_client_writer()
+
+        await proxy._forward_client_to_server(client_reader, client_writer)
+
+        # Server should NOT have received anything
+        assert len(proxy._server_written) == 0
+        # Client should have received the cached response
+        assert len(client_written) == 1
+        body = parse_lsp_body(client_written[0])
+        assert body["id"] == 7
+        assert body["result"] == proxy._init_result
+
+    @pytest.mark.asyncio
+    async def test_shutdown_intercepted_returns_null(self):
+        """Shutdown request should return null result and NOT forward to server."""
+        from amplifier_module_tool_lsp.proxy import make_lsp_message, parse_lsp_body
+
+        proxy = self._make_proxy()
+
+        shutdown_msg = make_lsp_message(
+            {"jsonrpc": "2.0", "id": 10, "method": "shutdown"}
+        )
+
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(shutdown_msg)
+        client_reader.feed_eof()
+
+        client_writer, client_written = self._make_client_writer()
+
+        await proxy._forward_client_to_server(client_reader, client_writer)
+
+        # Server should NOT have received shutdown
+        assert len(proxy._server_written) == 0
+        # Client should have received {result: null}
+        assert len(client_written) == 1
+        body = parse_lsp_body(client_written[0])
+        assert body["id"] == 10
+        assert body["result"] is None
+
+    @pytest.mark.asyncio
+    async def test_exit_disconnects_without_forwarding(self):
+        """Exit notification should disconnect client without forwarding to server."""
+        from amplifier_module_tool_lsp.proxy import make_lsp_message
+
+        proxy = self._make_proxy()
+
+        exit_msg = make_lsp_message({"jsonrpc": "2.0", "method": "exit"})
+
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(exit_msg)
+        client_reader.feed_eof()
+
+        client_writer, client_written = self._make_client_writer()
+
+        await proxy._forward_client_to_server(client_reader, client_writer)
+
+        # Server should NOT have received exit
+        assert len(proxy._server_written) == 0
+        # Client should NOT have received any response
+        assert len(client_written) == 0
+
+    @pytest.mark.asyncio
+    async def test_initialized_swallowed_when_already_initialized(self):
+        """'initialized' notification should be swallowed for subsequent clients."""
+        from amplifier_module_tool_lsp.proxy import make_lsp_message
+
+        proxy = self._make_proxy()
+        proxy._initialized = True
+
+        initialized_msg = make_lsp_message(
+            {"jsonrpc": "2.0", "method": "initialized", "params": {}}
+        )
+
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(initialized_msg)
+        client_reader.feed_eof()
+
+        client_writer, client_written = self._make_client_writer()
+
+        await proxy._forward_client_to_server(client_reader, client_writer)
+
+        # Server should NOT have received initialized
+        assert len(proxy._server_written) == 0
+        # Client should NOT have received anything
+        assert len(client_written) == 0
+
+    @pytest.mark.asyncio
+    async def test_first_initialized_forwarded(self):
+        """First 'initialized' notification should be forwarded to server."""
+        from amplifier_module_tool_lsp.proxy import make_lsp_message
+
+        proxy = self._make_proxy()
+        assert proxy._initialized is False
+
+        initialized_msg = make_lsp_message(
+            {"jsonrpc": "2.0", "method": "initialized", "params": {}}
+        )
+
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(initialized_msg)
+        client_reader.feed_eof()
+
+        client_writer, client_written = self._make_client_writer()
+
+        await proxy._forward_client_to_server(client_reader, client_writer)
+
+        # Server SHOULD have received initialized
+        assert len(proxy._server_written) == 1
+        # Client should NOT have received anything
+        assert len(client_written) == 0
+
+    @pytest.mark.asyncio
+    async def test_server_crash_cleans_up_state(self, tmp_path):
+        """Server subprocess crash should clean up state file and stop proxy."""
+        from amplifier_module_tool_lsp.proxy import LspProxyServer
+
+        proxy = LspProxyServer.__new__(LspProxyServer)
+        proxy._running = True
+        proxy.language = "rust"
+        proxy.workspace = Path("/tmp/project")
+        proxy.command = ["rust-analyzer"]
+        proxy.idle_timeout = 300
+        proxy.state_dir = tmp_path
+        proxy._port = 12345
+
+        # Write a state file
+        proxy._server_process = MagicMock(pid=9999)
+        proxy._write_state_file()
+        assert proxy._state_file_path().exists()
+
+        # Mock process.wait() to return immediately (simulating crash)
+        proxy._server_process.wait = AsyncMock(return_value=1)
+
+        # Mock TCP server
+        proxy._tcp_server = MagicMock()
+        proxy._tcp_server.close = MagicMock()
+
+        await proxy._monitor_server()
+
+        # State file should be removed
+        assert not proxy._state_file_path().exists()
+        # Proxy should no longer be running
+        assert proxy._running is False
+        # TCP server should be closed
+        proxy._tcp_server.close.assert_called_once()

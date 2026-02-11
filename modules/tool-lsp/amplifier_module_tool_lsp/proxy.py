@@ -99,6 +99,7 @@ class LspProxyServer:
         self._last_client_disconnect = time.time()
         self._init_result = None  # Cached InitializeResult
         self._initialized = False  # Has the server been initialized?
+        self._pending_init_id = None  # Request ID of in-flight initialize
         self._running = True
 
     # ── Server subprocess ─────────────────────────────────────────────────
@@ -184,14 +185,22 @@ class LspProxyServer:
             method = body.get("method")
 
             # Handle initialize specially — cache or replay
-            if method == "initialize" and self._initialized:
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": body.get("id"),
-                    "result": self._init_result,
-                }
-                await write_lsp_message(client_writer, make_lsp_message(response))
-                continue
+            if method == "initialize":
+                if self._initialized:
+                    # Server already initialized — return cached result
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": body.get("id"),
+                        "result": self._init_result,
+                    }
+                    await write_lsp_message(client_writer, make_lsp_message(response))
+                    continue
+                else:
+                    # First initialize — track ID and forward to server
+                    self._pending_init_id = body.get("id")
+                    self._server_writer.write(raw)
+                    await self._server_writer.drain()
+                    continue
 
             # Swallow shutdown/exit from client — don't kill the shared server
             if method == "shutdown":
@@ -218,12 +227,17 @@ class LspProxyServer:
 
             body = parse_lsp_body(raw)
 
-            # Cache initialize result
-            if body and "id" in body and "result" in body and not self._initialized:
-                result = body.get("result", {})
-                if isinstance(result, dict) and "capabilities" in result:
-                    self._init_result = result
-                    self._initialized = True
+            # Cache initialize result using request ID correlation
+            if (
+                body
+                and not self._initialized
+                and self._pending_init_id is not None
+                and body.get("id") == self._pending_init_id
+                and "result" in body
+            ):
+                self._init_result = body["result"]
+                self._initialized = True
+                self._pending_init_id = None
 
             # Forward to client
             await write_lsp_message(client_writer, raw)
