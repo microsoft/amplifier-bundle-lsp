@@ -508,3 +508,74 @@ class TestCapabilities:
     def test_diagnostic_capability(self):
         source = self._get_capabilities()
         assert '"diagnostic"' in source or "'diagnostic'" in source
+
+    def test_experimental_capabilities(self):
+        """_initialize should include experimental capabilities for rust-analyzer."""
+        source = self._get_capabilities()
+        assert '"experimental"' in source or "'experimental'" in source
+
+    def test_experimental_snippet_text_edit(self):
+        """experimental block should enable snippetTextEdit."""
+        source = self._get_capabilities()
+        assert "snippetTextEdit" in source
+
+    def test_experimental_code_action_group(self):
+        """experimental block should enable codeActionGroup."""
+        source = self._get_capabilities()
+        assert "codeActionGroup" in source
+
+    def test_experimental_hover_actions(self):
+        """experimental block should enable hoverActions."""
+        source = self._get_capabilities()
+        assert "hoverActions" in source
+
+    def test_experimental_server_status_notification(self):
+        """experimental block should enable serverStatusNotification."""
+        source = self._get_capabilities()
+        assert "serverStatusNotification" in source
+
+    def test_experimental_commands(self):
+        """experimental block should declare supported commands."""
+        source = self._get_capabilities()
+        assert "rust-analyzer.runSingle" in source
+        assert "rust-analyzer.showReferences" in source
+
+
+# ── Warm-up after create ──────────────────────────────────────────────────────
+
+
+class TestWarmUp:
+    """LspServer.create() should send a warm-up workspace/symbol request after init."""
+
+    @pytest.mark.asyncio
+    async def test_warmup_request_sent_after_initialize(self):
+        """After _initialize, create() should send workspace/symbol to prime indexing."""
+        import inspect
+
+        source = inspect.getsource(LspServer.create)
+        # The warm-up should request workspace/symbol with empty query
+        assert "workspace/symbol" in source, (
+            "LspServer.create() should send a workspace/symbol request after _initialize "
+            "to prime the index for reduced cold-start latency"
+        )
+
+    @pytest.mark.asyncio
+    async def test_warmup_uses_timeout(self):
+        """Warm-up request should use asyncio.wait_for with a timeout."""
+        import inspect
+
+        source = inspect.getsource(LspServer.create)
+        assert "wait_for" in source, (
+            "Warm-up request should use asyncio.wait_for to avoid blocking indefinitely"
+        )
+
+    @pytest.mark.asyncio
+    async def test_warmup_swallows_exceptions(self):
+        """Warm-up failure should not prevent server creation."""
+        import inspect
+
+        source = inspect.getsource(LspServer.create)
+        # Should have exception handling around the warm-up
+        assert "except" in source, (
+            "Warm-up should catch exceptions so failures don't break server creation"
+        )

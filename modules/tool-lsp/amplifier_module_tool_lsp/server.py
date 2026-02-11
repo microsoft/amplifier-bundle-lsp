@@ -59,6 +59,16 @@ class LspServer:
         # Initialize the server
         await server._initialize(init_options)
 
+        # Trigger workspace indexing to reduce cold-start latency for first operations
+        # workspace/symbol with empty query primes the index without blocking
+        try:
+            await asyncio.wait_for(
+                server.request("workspace/symbol", {"query": ""}),
+                timeout=5.0,
+            )
+        except Exception:
+            pass  # Indexing not complete yet, that's OK — operations will still work
+
         return server
 
     async def _initialize(self, init_options: dict[str, Any]):
@@ -111,6 +121,19 @@ class LspServer:
                     "workspace": {
                         "symbol": {"dynamicRegistration": True},
                         "workDoneProgress": True,
+                    },
+                    "experimental": {
+                        "snippetTextEdit": True,
+                        "codeActionGroup": True,
+                        "hoverActions": True,
+                        "serverStatusNotification": True,
+                        "colorDiagnosticOutput": True,
+                        "commands": {
+                            "commands": [
+                                "rust-analyzer.runSingle",
+                                "rust-analyzer.showReferences",
+                            ]
+                        },
                     },
                 },
                 "initializationOptions": init_options,
