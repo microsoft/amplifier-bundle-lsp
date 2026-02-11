@@ -11,7 +11,11 @@ import json
 
 import pytest
 
-from amplifier_module_tool_lsp.server import LspServer, LspServerManager
+from amplifier_module_tool_lsp.server import (
+    CLIENT_CAPABILITIES,
+    LspServer,
+    LspServerManager,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -462,83 +466,73 @@ class TestDiagnosticsCache:
 
 
 class TestCapabilities:
-    """Client capabilities should include all new features."""
+    """Client capabilities should include all new features.
 
-    def _get_capabilities(self) -> dict:
-        """Extract capabilities from _initialize method source."""
-        # We test by inspecting what _initialize sends. Since we can't easily
-        # call it without a real server, we'll check the source code.
+    Capabilities are defined in the CLIENT_CAPABILITIES module constant
+    and referenced by LspServer._initialize.
+    """
+
+    def test_initialize_references_constant(self):
+        """LspServer._initialize should use the CLIENT_CAPABILITIES constant."""
         import inspect
 
         source = inspect.getsource(LspServer._initialize)
-        return source
+        assert "CLIENT_CAPABILITIES" in source
 
     def test_hierarchical_symbol_support(self):
-        source = self._get_capabilities()
-        assert "hierarchicalDocumentSymbolSupport" in source
+        td = CLIENT_CAPABILITIES["textDocument"]
+        assert td["documentSymbol"]["hierarchicalDocumentSymbolSupport"] is True
 
     def test_type_hierarchy_capability(self):
-        source = self._get_capabilities()
-        assert "typeHierarchy" in source
+        assert "typeHierarchy" in CLIENT_CAPABILITIES["textDocument"]
 
     def test_rename_capability_with_prepare(self):
-        source = self._get_capabilities()
-        assert "rename" in source
-        assert "prepareSupport" in source
+        rename = CLIENT_CAPABILITIES["textDocument"]["rename"]
+        assert rename["prepareSupport"] is True
 
     def test_code_action_capability(self):
-        source = self._get_capabilities()
-        assert "codeAction" in source
-        assert "codeActionLiteralSupport" in source
+        ca = CLIENT_CAPABILITIES["textDocument"]["codeAction"]
+        assert "codeActionLiteralSupport" in ca
 
     def test_inlay_hint_capability(self):
-        source = self._get_capabilities()
-        assert "inlayHint" in source
+        assert "inlayHint" in CLIENT_CAPABILITIES["textDocument"]
 
     def test_publish_diagnostics_capability(self):
-        source = self._get_capabilities()
-        assert "publishDiagnostics" in source
-        assert "relatedInformation" in source
-        assert "tagSupport" in source
+        pd = CLIENT_CAPABILITIES["textDocument"]["publishDiagnostics"]
+        assert pd["relatedInformation"] is True
+        assert "tagSupport" in pd
 
     def test_work_done_progress_capability(self):
-        source = self._get_capabilities()
-        assert "workDoneProgress" in source
+        assert CLIENT_CAPABILITIES["workspace"]["workDoneProgress"] is True
 
     def test_diagnostic_capability(self):
-        source = self._get_capabilities()
-        assert '"diagnostic"' in source or "'diagnostic'" in source
+        assert "diagnostic" in CLIENT_CAPABILITIES["textDocument"]
 
     def test_experimental_capabilities(self):
-        """_initialize should include experimental capabilities for rust-analyzer."""
-        source = self._get_capabilities()
-        assert '"experimental"' in source or "'experimental'" in source
+        """CLIENT_CAPABILITIES should include experimental capabilities for rust-analyzer."""
+        assert "experimental" in CLIENT_CAPABILITIES
 
     def test_experimental_snippet_text_edit(self):
         """experimental block should enable snippetTextEdit."""
-        source = self._get_capabilities()
-        assert "snippetTextEdit" in source
+        assert CLIENT_CAPABILITIES["experimental"]["snippetTextEdit"] is True
 
     def test_experimental_code_action_group(self):
         """experimental block should enable codeActionGroup."""
-        source = self._get_capabilities()
-        assert "codeActionGroup" in source
+        assert CLIENT_CAPABILITIES["experimental"]["codeActionGroup"] is True
 
     def test_experimental_hover_actions(self):
         """experimental block should enable hoverActions."""
-        source = self._get_capabilities()
-        assert "hoverActions" in source
+        assert CLIENT_CAPABILITIES["experimental"]["hoverActions"] is True
 
     def test_experimental_server_status_notification(self):
         """experimental block should enable serverStatusNotification."""
-        source = self._get_capabilities()
-        assert "serverStatusNotification" in source
+        assert CLIENT_CAPABILITIES["experimental"]["serverStatusNotification"] is True
 
     def test_experimental_commands(self):
         """experimental block should declare supported commands."""
-        source = self._get_capabilities()
-        assert "rust-analyzer.runSingle" in source
-        assert "rust-analyzer.showReferences" in source
+        cmds = CLIENT_CAPABILITIES["experimental"]["commands"]["commands"]
+        assert "rust-analyzer.runSingle" in cmds
+        assert "rust-analyzer.showReferences" in cmds
 
 
 # ── Warm-up after create ──────────────────────────────────────────────────────
