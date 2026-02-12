@@ -418,7 +418,8 @@ class TestStartProxy:
             assert popen_called_with["kwargs"]["start_new_session"] is True
             assert popen_called_with["kwargs"]["stdin"] == sp.DEVNULL
             assert popen_called_with["kwargs"]["stdout"] == sp.DEVNULL
-            assert popen_called_with["kwargs"]["stderr"] == sp.DEVNULL
+            # stderr goes to a log file (not DEVNULL) for diagnosable failures
+            assert popen_called_with["kwargs"]["stderr"] != sp.DEVNULL
             # Verify args contain the proxy module
             args = popen_called_with["args"]
             assert "-m" in args

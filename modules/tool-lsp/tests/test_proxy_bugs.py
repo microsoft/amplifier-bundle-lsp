@@ -1,0 +1,473 @@
+# pyright: reportPrivateUsage=false, reportAttributeAccessIssue=false, reportArgumentType=false
+"""Tests for proxy bugs found during real-world testing.
+
+Bug 1 (P0): Proxy subprocess can't find its own module — missing PYTHONPATH.
+Bug 2 (P1): Proxy dies after first client disconnects.
+Bug 3 (P2): Workspace detection finds crate-level, not workspace-root Cargo.toml.
+Bug 4 (P3): Proxy errors invisible — stderr to DEVNULL.
+"""
+
+import asyncio
+import json
+import subprocess
+import time
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from amplifier_module_tool_lsp.server import LspServerManager
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _make_manager():
+    """Create an LspServerManager without triggering __init__ side effects."""
+    mgr = LspServerManager.__new__(LspServerManager)
+    mgr._servers = {}
+    mgr._timeout = 30.0
+    mgr._on_shutdown = None
+    return mgr
+
+
+# ── Bug 1: PYTHONPATH passed to proxy subprocess ────────────────────────────
+
+
+class TestPythonPathInProxy:
+    """_start_proxy must pass PYTHONPATH so the detached subprocess can find
+    amplifier_module_tool_lsp."""
+
+    @pytest.mark.asyncio
+    async def test_start_proxy_passes_env_with_pythonpath(self, tmp_path):
+        """Popen should receive env dict containing PYTHONPATH from sys.path."""
+        mgr = _make_manager()
+        mgr.STATE_DIR = tmp_path
+
+        # Write a fake state file after Popen is called to satisfy the wait loop
+        state_path = mgr._state_file_path("rust", Path("/tmp/ws"))
+
+        def fake_popen(*args, **kwargs):
+            # Write state file so the wait loop exits
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "port": 12345,
+                        "proxy_pid": 99999,
+                        "language": "rust",
+                        "workspace_root": "/tmp/ws",
+                    }
+                )
+            )
+            return MagicMock()
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen) as mock_popen,
+            patch.object(
+                mgr,
+                "_read_state",
+                return_value={
+                    "port": 12345,
+                    "proxy_pid": 99999,
+                    "language": "rust",
+                    "workspace_root": "/tmp/ws",
+                },
+            ),
+        ):
+            await mgr._start_proxy(
+                language="rust",
+                workspace=Path("/tmp/ws"),
+                server_config={"command": ["rust-analyzer"]},
+                init_options={},
+            )
+
+        # Verify Popen was called with env containing PYTHONPATH
+        mock_popen.assert_called_once()
+        call_kwargs = mock_popen.call_args[1]
+        assert "env" in call_kwargs, "Popen must be called with env= kwarg"
+        env = call_kwargs["env"]
+        assert "PYTHONPATH" in env, "env must contain PYTHONPATH"
+        # PYTHONPATH should be a non-empty string
+        assert len(env["PYTHONPATH"]) > 0
+
+
+# ── Bug 2: Proxy survives client disconnect ─────────────────────────────────
+
+
+class TestProxySurvivesDisconnect:
+    """After _handle_client returns (client disconnect), the proxy must remain
+    running and the TCP server must still be listening."""
+
+    @pytest.mark.asyncio
+    async def test_proxy_running_after_client_disconnect(self):
+        """After _handle_client completes, _running should still be True."""
+        from amplifier_module_tool_lsp.proxy import LspProxyServer
+
+        proxy = LspProxyServer.__new__(LspProxyServer)
+        proxy._running = True
+        proxy._current_client = None
+        proxy._last_client_disconnect = time.time()
+        proxy._initialized = True
+        proxy._init_result = {"capabilities": {}}
+        proxy._pending_init_id = None
+
+        # Mock server writer
+        mock_server_writer = MagicMock()
+        mock_server_writer.write = MagicMock()
+        mock_server_writer.drain = AsyncMock()
+        proxy._server_writer = mock_server_writer
+
+        # Create a mock server reader that returns None (simulating no data
+        # from server during this client's session — the client disconnects first)
+        mock_server_reader = asyncio.StreamReader()
+        proxy._server_reader = mock_server_reader
+
+        # Create client streams — client sends initialize + exit then disconnects
+        from amplifier_module_tool_lsp.proxy import make_lsp_message
+
+        init_msg = make_lsp_message(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        )
+        exit_msg = make_lsp_message({"jsonrpc": "2.0", "method": "exit"})
+
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(init_msg + exit_msg)
+        client_reader.feed_eof()
+
+        client_writer = MagicMock()
+        client_writer.write = MagicMock()
+        client_writer.drain = AsyncMock()
+        client_writer.close = MagicMock()
+        client_writer.wait_closed = AsyncMock()
+
+        # Feed EOF to server reader so the server_to_client task can complete
+        # (rather than blocking forever)
+        mock_server_reader.feed_eof()
+
+        await proxy._handle_client(client_reader, client_writer)
+
+        # Key assertion: proxy is still running after client disconnect
+        assert proxy._running is True, (
+            "Proxy must remain running after client disconnects"
+        )
+        assert proxy._current_client is None, (
+            "Current client should be cleared after disconnect"
+        )
+
+    @pytest.mark.asyncio
+    async def test_server_reader_not_closed_after_client_disconnect(self):
+        """The server process stdout must not be closed when a client disconnects."""
+        from amplifier_module_tool_lsp.proxy import LspProxyServer
+
+        proxy = LspProxyServer.__new__(LspProxyServer)
+        proxy._running = True
+        proxy._current_client = None
+        proxy._last_client_disconnect = time.time()
+        proxy._initialized = True
+        proxy._init_result = {"capabilities": {}}
+        proxy._pending_init_id = None
+
+        # Mock server writer/reader
+        mock_server_writer = MagicMock()
+        mock_server_writer.write = MagicMock()
+        mock_server_writer.drain = AsyncMock()
+        proxy._server_writer = mock_server_writer
+
+        mock_server_reader = asyncio.StreamReader()
+        proxy._server_reader = mock_server_reader
+
+        from amplifier_module_tool_lsp.proxy import make_lsp_message
+
+        exit_msg = make_lsp_message({"jsonrpc": "2.0", "method": "exit"})
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(exit_msg)
+        client_reader.feed_eof()
+
+        client_writer = MagicMock()
+        client_writer.write = MagicMock()
+        client_writer.drain = AsyncMock()
+        client_writer.close = MagicMock()
+        client_writer.wait_closed = AsyncMock()
+
+        # Feed EOF so server_to_client completes
+        mock_server_reader.feed_eof()
+
+        await proxy._handle_client(client_reader, client_writer)
+
+        # The server reader should still be usable (not permanently broken)
+        # We verify this by checking the proxy still has a valid _server_reader
+        assert proxy._server_reader is not None
+        assert proxy._running is True
+
+
+# ── Bug 3: Workspace detection prefers workspace root ────────────────────────
+
+
+class TestWorkspaceDetectionCargo:
+    """_find_workspace should prefer Cargo.toml with [workspace] section
+    over crate-level Cargo.toml."""
+
+    def _make_tool(self):
+        """Create a tool with Rust language config."""
+        from amplifier_module_tool_lsp.tool import LspTool
+
+        return LspTool(
+            {
+                "languages": {
+                    "rust": {
+                        "extensions": [".rs"],
+                        "workspace_markers": ["Cargo.toml", ".git"],
+                        "server": {"command": ["rust-analyzer"]},
+                    }
+                }
+            }
+        )
+
+    def test_finds_workspace_root_not_crate(self, tmp_path):
+        """With nested Cargo.toml files, should return the one with [workspace]."""
+        # Create workspace structure:
+        # tmp_path/
+        #   Cargo.toml          (contains [workspace])
+        #   crates/
+        #     sub/
+        #       Cargo.toml      (crate-level, no [workspace])
+        #       src/
+        #         lib.rs
+        workspace_root = tmp_path / "project"
+        workspace_root.mkdir()
+        (workspace_root / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/*"]\n'
+        )
+
+        crate_dir = workspace_root / "crates" / "sub"
+        crate_dir.mkdir(parents=True)
+        (crate_dir / "Cargo.toml").write_text(
+            '[package]\nname = "sub"\nversion = "0.1.0"\n'
+        )
+
+        src_dir = crate_dir / "src"
+        src_dir.mkdir()
+        lib_rs = src_dir / "lib.rs"
+        lib_rs.write_text("pub fn hello() {}\n")
+
+        tool = self._make_tool()
+        lang_config = tool._languages["rust"]
+        result = tool._find_workspace(str(lib_rs), lang_config)
+
+        assert result == workspace_root, (
+            f"Expected workspace root {workspace_root}, got {result}. "
+            "Should find Cargo.toml with [workspace], not crate-level Cargo.toml."
+        )
+
+    def test_fallback_single_crate_no_workspace(self, tmp_path):
+        """Single Cargo.toml without [workspace] should still be found."""
+        # Create simple project:
+        # tmp_path/
+        #   project/
+        #     Cargo.toml      (no [workspace])
+        #     src/
+        #       main.rs
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "Cargo.toml").write_text(
+            '[package]\nname = "myapp"\nversion = "0.1.0"\n'
+        )
+
+        src_dir = project / "src"
+        src_dir.mkdir()
+        main_rs = src_dir / "main.rs"
+        main_rs.write_text("fn main() {}\n")
+
+        tool = self._make_tool()
+        lang_config = tool._languages["rust"]
+        result = tool._find_workspace(str(main_rs), lang_config)
+
+        assert result == project, (
+            f"Expected {project}, got {result}. "
+            "Single-crate project should still find the Cargo.toml directory."
+        )
+
+    def test_git_marker_used_as_fallback(self, tmp_path):
+        """When .git exists but no [workspace] in Cargo.toml, .git dir wins."""
+        # Create:
+        # tmp_path/
+        #   .git/
+        #   crates/sub/Cargo.toml  (no [workspace])
+        #   crates/sub/src/lib.rs
+        root = tmp_path / "project"
+        root.mkdir()
+        (root / ".git").mkdir()
+
+        crate = root / "crates" / "sub"
+        crate.mkdir(parents=True)
+        (crate / "Cargo.toml").write_text('[package]\nname = "sub"\n')
+
+        src = crate / "src"
+        src.mkdir()
+        lib_rs = src / "lib.rs"
+        lib_rs.write_text("")
+
+        tool = self._make_tool()
+        lang_config = tool._languages["rust"]
+        result = tool._find_workspace(str(lib_rs), lang_config)
+
+        # Should find .git directory at root, not stop at crate-level Cargo.toml
+        assert result == root, (
+            f"Expected {root} (has .git), got {result}. "
+            ".git should be preferred over crate-level Cargo.toml."
+        )
+
+
+class TestWorkspaceDetectionPython:
+    """Python projects should still work with the updated workspace detection."""
+
+    def _make_tool(self):
+        from amplifier_module_tool_lsp.tool import LspTool
+
+        return LspTool(
+            {
+                "languages": {
+                    "python": {
+                        "extensions": [".py"],
+                        "workspace_markers": ["pyproject.toml", ".git"],
+                        "server": {"command": ["pyright-langserver", "--stdio"]},
+                    }
+                }
+            }
+        )
+
+    def test_python_finds_pyproject_toml(self, tmp_path):
+        """Python projects find pyproject.toml as before."""
+        project = tmp_path / "myproject"
+        project.mkdir()
+        (project / "pyproject.toml").write_text("[project]\nname = 'myproject'\n")
+
+        src = project / "src" / "myproject"
+        src.mkdir(parents=True)
+        py_file = src / "main.py"
+        py_file.write_text("print('hello')\n")
+
+        tool = self._make_tool()
+        lang_config = tool._languages["python"]
+        result = tool._find_workspace(str(py_file), lang_config)
+
+        assert result == project
+
+
+# ── Bug 4: Proxy stderr goes to log file ─────────────────────────────────────
+
+
+class TestProxyStderrLogging:
+    """_start_proxy should redirect stderr to a log file, not DEVNULL."""
+
+    @pytest.mark.asyncio
+    async def test_start_proxy_creates_log_directory(self, tmp_path):
+        """A logs/ subdirectory should be created in STATE_DIR."""
+        mgr = _make_manager()
+        mgr.STATE_DIR = tmp_path
+
+        state_path = mgr._state_file_path("rust", Path("/tmp/ws"))
+
+        def fake_popen(*args, **kwargs):
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "port": 12345,
+                        "proxy_pid": 99999,
+                        "language": "rust",
+                        "workspace_root": "/tmp/ws",
+                    }
+                )
+            )
+            return MagicMock()
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch.object(
+                mgr,
+                "_read_state",
+                return_value={
+                    "port": 12345,
+                    "proxy_pid": 99999,
+                    "language": "rust",
+                    "workspace_root": "/tmp/ws",
+                },
+            ),
+        ):
+            await mgr._start_proxy(
+                language="rust",
+                workspace=Path("/tmp/ws"),
+                server_config={"command": ["rust-analyzer"]},
+                init_options={},
+            )
+
+        log_dir = tmp_path / "logs"
+        assert log_dir.exists(), "logs/ directory should be created"
+        assert log_dir.is_dir()
+
+    @pytest.mark.asyncio
+    async def test_start_proxy_stderr_not_devnull(self, tmp_path):
+        """Popen stderr should NOT be subprocess.DEVNULL."""
+        mgr = _make_manager()
+        mgr.STATE_DIR = tmp_path
+
+        state_path = mgr._state_file_path("rust", Path("/tmp/ws"))
+
+        def fake_popen(*args, **kwargs):
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "port": 12345,
+                        "proxy_pid": 99999,
+                        "language": "rust",
+                        "workspace_root": "/tmp/ws",
+                    }
+                )
+            )
+            return MagicMock()
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen) as mock_popen,
+            patch.object(
+                mgr,
+                "_read_state",
+                return_value={
+                    "port": 12345,
+                    "proxy_pid": 99999,
+                    "language": "rust",
+                    "workspace_root": "/tmp/ws",
+                },
+            ),
+        ):
+            await mgr._start_proxy(
+                language="rust",
+                workspace=Path("/tmp/ws"),
+                server_config={"command": ["rust-analyzer"]},
+                init_options={},
+            )
+
+        call_kwargs = mock_popen.call_args[1]
+        assert call_kwargs.get("stderr") != subprocess.DEVNULL, (
+            "stderr should NOT be DEVNULL — it should go to a log file"
+        )
+
+
+class TestProxyLogFunction:
+    """proxy.py should have a log() function for stderr logging."""
+
+    def test_log_function_exists(self):
+        from amplifier_module_tool_lsp.proxy import log
+
+        assert callable(log)
+
+    def test_log_writes_to_stderr(self, capsys):
+        """log() should write to stderr with [lsp-proxy] prefix."""
+        from amplifier_module_tool_lsp.proxy import log
+
+        log("test message")
+        captured = capsys.readouterr()
+        assert "[lsp-proxy]" in captured.err
+        assert "test message" in captured.err

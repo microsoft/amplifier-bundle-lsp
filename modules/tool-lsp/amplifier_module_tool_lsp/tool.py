@@ -349,20 +349,38 @@ class LspTool:
         return None
 
     def _find_workspace(self, file_path: str, lang_config: dict) -> Path:
-        """Find workspace root by looking for marker files."""
+        """Find workspace root by looking for marker files.
+
+        For Cargo workspaces, prefers the root Cargo.toml (containing [workspace])
+        over crate-level Cargo.toml files. For .git, returns immediately since it
+        always marks the project root.
+        """
         path = Path(file_path).resolve()
         markers = lang_config.get("workspace_markers", [])
 
-        # Walk up directory tree looking for markers
+        # Walk up directory tree, collecting all marker matches.
+        # For Cargo.toml specifically, keep walking to find the workspace root.
+        best_match = None
         current = path.parent
         while current != current.parent:
             for marker in markers:
                 if (current / marker).exists():
-                    return current
+                    if best_match is None:
+                        best_match = current
+                    # For Cargo.toml, check if this is a workspace root
+                    if marker == "Cargo.toml":
+                        try:
+                            content = (current / "Cargo.toml").read_text()
+                            if "[workspace]" in content:
+                                return current  # Found workspace root
+                        except OSError:
+                            pass
+                    # For .git, this is always the project root
+                    elif marker == ".git":
+                        return current
             current = current.parent
 
-        # Fallback to file's directory
-        return path.parent
+        return best_match or path.parent
 
     async def execute(self, arguments: dict) -> ToolResult:
         """Execute an LSP operation."""

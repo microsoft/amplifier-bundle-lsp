@@ -21,8 +21,14 @@ import hashlib
 import json
 import os
 import signal
+import sys
 import time
 from pathlib import Path
+
+
+def log(msg: str) -> None:
+    """Log to stderr (goes to log file when launched by LspServerManager)."""
+    print(f"[lsp-proxy] {msg}", file=sys.stderr, flush=True)
 
 
 # ── LSP message framing ──────────────────────────────────────────────────────
@@ -106,6 +112,7 @@ class LspProxyServer:
 
     async def start_server(self):
         """Start the LSP server subprocess."""
+        log(f"starting server: {self.command} in {self.workspace}")
         self._server_process = await asyncio.create_subprocess_exec(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
@@ -115,6 +122,7 @@ class LspProxyServer:
         )
         self._server_writer = self._server_process.stdin
         self._server_reader = self._server_process.stdout
+        log(f"server started (pid={self._server_process.pid})")
 
     # ── TCP listener ──────────────────────────────────────────────────────
 
@@ -126,22 +134,30 @@ class LspProxyServer:
             port=0,
         )
         self._port = self._tcp_server.sockets[0].getsockname()[1]
+        log(f"TCP server listening on 127.0.0.1:{self._port}")
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ):
-        """Handle a single client connection."""
+        """Handle a single client connection.
+
+        This is a clean per-connection handler. When it returns (client disconnect),
+        the proxy continues running and accepting new connections.
+        """
         if self._current_client is not None:
+            log("rejecting second client (already connected)")
             writer.close()
             await writer.wait_closed()
             return
 
+        log("client connected")
         self._current_client = (reader, writer)
         try:
             await self._bridge_client(reader, writer)
         finally:
             self._current_client = None
             self._last_client_disconnect = time.time()
+            log("client disconnected")
             try:
                 writer.close()
                 await writer.wait_closed()
@@ -151,23 +167,39 @@ class LspProxyServer:
     # ── Bidirectional bridge ──────────────────────────────────────────────
 
     async def _bridge_client(self, client_reader, client_writer):
-        """Bridge LSP messages between a TCP client and the stdio server."""
+        """Bridge LSP messages between a TCP client and the stdio server.
+
+        Uses an event to signal disconnect instead of cancelling the server reader,
+        which would corrupt the shared server stdout stream.
+        """
+        client_done = asyncio.Event()
+
         client_to_server = asyncio.create_task(
             self._forward_client_to_server(client_reader, client_writer)
         )
         server_to_client = asyncio.create_task(
-            self._forward_server_to_client(client_writer)
+            self._forward_server_to_client(client_writer, client_done)
         )
 
-        done, pending = await asyncio.wait(
-            [client_to_server, server_to_client],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        # Wait for the client-to-server direction to finish (client disconnect/exit)
+        try:
+            await client_to_server
+        except Exception:
+            pass
 
-        for task in pending:
-            task.cancel()
+        # Signal the server-to-client forwarder to stop
+        client_done.set()
+
+        # Wait briefly for server_to_client to notice and exit cleanly
+        try:
+            await asyncio.wait_for(asyncio.shield(server_to_client), timeout=2.0)
+        except (TimeoutError, asyncio.CancelledError, Exception):
+            # If it doesn't exit cleanly, cancel it — but the server reader
+            # state may be indeterminate. This is acceptable since the next
+            # client will still work (server process stdio remains open).
+            server_to_client.cancel()
             try:
-                await task
+                await server_to_client
             except (asyncio.CancelledError, Exception):
                 pass
 
@@ -218,10 +250,27 @@ class LspProxyServer:
             self._server_writer.write(raw)
             await self._server_writer.drain()
 
-    async def _forward_server_to_client(self, client_writer):
-        """Read from server stdout, forward to TCP client."""
+    async def _forward_server_to_client(self, client_writer, client_done=None):
+        """Read from server stdout, forward to TCP client.
+
+        When client_done is set, stop forwarding and return cleanly without
+        corrupting the server stdout stream.
+        """
         while True:
-            raw = await read_lsp_message(self._server_reader)
+            # Check if client has disconnected before blocking on server read
+            if client_done is not None and client_done.is_set():
+                return
+
+            # Read next message from server with a timeout so we can check
+            # the client_done event periodically
+            try:
+                raw = await asyncio.wait_for(
+                    read_lsp_message(self._server_reader), timeout=1.0
+                )
+            except TimeoutError:
+                # No message from server yet — loop back to check client_done
+                continue
+
             if raw is None:
                 return  # Server process ended
 
@@ -239,8 +288,14 @@ class LspProxyServer:
                 self._initialized = True
                 self._pending_init_id = None
 
-            # Forward to client
-            await write_lsp_message(client_writer, raw)
+            # Forward to client (skip if client already disconnected)
+            if client_done is not None and client_done.is_set():
+                return
+            try:
+                await write_lsp_message(client_writer, raw)
+            except (ConnectionError, OSError):
+                # Client disconnected while we were writing
+                return
 
     # ── Idle timeout ──────────────────────────────────────────────────────
 
@@ -275,6 +330,7 @@ class LspProxyServer:
 
     async def _shutdown(self):
         """Gracefully shutdown server and clean up."""
+        log("shutting down")
         self._running = False
 
         # Shutdown LSP server

@@ -664,13 +664,29 @@ class LspServerManager:
             str(self.STATE_DIR),
         ]
 
+        # Pass current sys.path so the detached subprocess can find
+        # amplifier_module_tool_lsp (Bug 1 fix: P0)
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+
+        # Redirect stderr to log file for diagnosable failures (Bug 4 fix: P3)
+        log_dir = self.STATE_DIR / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        key = self._compute_state_key(language, workspace)
+        log_path = log_dir / f"{key}.log"
+        log_file = open(log_path, "w")  # noqa: SIM115
+
         subprocess.Popen(
             proxy_args,
             start_new_session=True,  # Detach from parent process group
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=log_file,
+            env=env,
         )
+
+        # Child inherits the fd; parent can close its handle
+        log_file.close()
 
         # Wait for proxy to write state file and start accepting connections
         state_path = self._state_file_path(language, workspace)
