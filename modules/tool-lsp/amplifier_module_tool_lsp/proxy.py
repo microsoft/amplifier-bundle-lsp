@@ -144,8 +144,13 @@ class LspProxyServer:
         This is a clean per-connection handler. When it returns (client disconnect),
         the proxy continues running and accepting new connections.
         """
-        if self._current_client is not None:
-            log("rejecting second client (already connected)")
+        # Wait for slot to be available (sequential client model)
+        for _ in range(100):  # Wait up to 10 seconds (100 * 0.1)
+            if self._current_client is None:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            log("rejecting client (queue timeout)")
             writer.close()
             await writer.wait_closed()
             return
@@ -190,18 +195,16 @@ class LspProxyServer:
         # Signal the server-to-client forwarder to stop
         client_done.set()
 
-        # Wait briefly for server_to_client to notice and exit cleanly
+        # Wait for it to finish cleanly — give it up to 5 seconds.
+        # DO NOT cancel it — cancelling corrupts the server stdout reader
+        # because read_lsp_message may be partway through reading headers + body.
+        # asyncio.wait (unlike wait_for) does NOT cancel on timeout.
         try:
-            await asyncio.wait_for(asyncio.shield(server_to_client), timeout=2.0)
-        except (TimeoutError, asyncio.CancelledError, Exception):
-            # If it doesn't exit cleanly, cancel it — but the server reader
-            # state may be indeterminate. This is acceptable since the next
-            # client will still work (server process stdio remains open).
-            server_to_client.cancel()
-            try:
-                await server_to_client
-            except (asyncio.CancelledError, Exception):
-                pass
+            await asyncio.wait([server_to_client], timeout=5.0)
+        except Exception:
+            pass
+        # If still running after timeout, the task is abandoned (not cancelled).
+        # It will finish on its own when the next server message arrives.
 
     async def _forward_client_to_server(self, client_reader, client_writer):
         """Read from TCP client, forward to server stdin."""

@@ -1,4 +1,4 @@
-# pyright: reportPrivateUsage=false, reportAttributeAccessIssue=false, reportArgumentType=false
+# pyright: reportPrivateUsage=false, reportAttributeAccessIssue=false, reportArgumentType=false, reportOptionalSubscript=false
 """Tests for proxy bugs found during real-world testing.
 
 Bug 1 (P0): Proxy subprocess can't find its own module — missing PYTHONPATH.
@@ -471,3 +471,175 @@ class TestProxyLogFunction:
         captured = capsys.readouterr()
         assert "[lsp-proxy]" in captured.err
         assert "test message" in captured.err
+
+
+# ── Bug 5 (P0): Don't cancel server-to-client forwarder ──────────────────────
+
+
+class TestServerForwarderNotCancelled:
+    """_bridge_client must not cancel the server-to-client forwarder task.
+
+    Cancelling it corrupts the shared server stdout StreamReader because
+    read_lsp_message may be partway through reading headers + body.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bridge_does_not_cancel_slow_server_forwarder(self):
+        """Even when server_to_client is slow to exit, it must not be cancelled.
+
+        With the buggy code, _bridge_client cancels server_to_client after 2s.
+        The fix waits up to 5s (using asyncio.wait which never cancels).
+        """
+        from amplifier_module_tool_lsp.proxy import LspProxyServer, make_lsp_message
+
+        proxy = LspProxyServer.__new__(LspProxyServer)
+        proxy._running = True
+        proxy._current_client = None
+        proxy._last_client_disconnect = time.time()
+        proxy._initialized = True
+        proxy._init_result = {"capabilities": {}}
+        proxy._pending_init_id = None
+
+        mock_server_writer = MagicMock()
+        mock_server_writer.write = MagicMock()
+        mock_server_writer.drain = AsyncMock()
+        proxy._server_writer = mock_server_writer
+
+        was_cancelled = False
+
+        async def slow_server_forwarder(writer, client_done):
+            """Simulates a forwarder that takes 3s to exit after client_done."""
+            nonlocal was_cancelled
+            try:
+                # Wait for client disconnect signal
+                while not client_done.is_set():
+                    await asyncio.sleep(0.1)
+                # Simulate finishing current message read (takes time)
+                await asyncio.sleep(3)
+            except asyncio.CancelledError:
+                was_cancelled = True
+                raise
+
+        proxy._forward_server_to_client = slow_server_forwarder
+
+        exit_msg = make_lsp_message({"jsonrpc": "2.0", "method": "exit"})
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(exit_msg)
+        client_reader.feed_eof()
+
+        client_writer = MagicMock()
+        client_writer.write = MagicMock()
+        client_writer.drain = AsyncMock()
+
+        await asyncio.wait_for(
+            proxy._bridge_client(client_reader, client_writer), timeout=10
+        )
+
+        assert not was_cancelled, (
+            "server-to-client forwarder was cancelled — "
+            "this corrupts the shared server stdout reader"
+        )
+
+    @pytest.mark.asyncio
+    async def test_server_reader_usable_across_reconnections(self):
+        """After client disconnects, server reader must still work for next client."""
+        from amplifier_module_tool_lsp.proxy import (
+            LspProxyServer,
+            make_lsp_message,
+            parse_lsp_body,
+            read_lsp_message,
+        )
+
+        proxy = LspProxyServer.__new__(LspProxyServer)
+        proxy._running = True
+        proxy._current_client = None
+        proxy._last_client_disconnect = time.time()
+        proxy._initialized = True
+        proxy._init_result = {"capabilities": {}}
+        proxy._pending_init_id = None
+
+        mock_server_writer = MagicMock()
+        mock_server_writer.write = MagicMock()
+        mock_server_writer.drain = AsyncMock()
+        proxy._server_writer = mock_server_writer
+
+        server_reader = asyncio.StreamReader()
+        proxy._server_reader = server_reader
+
+        # Client 1: connect and immediately exit
+        exit_msg = make_lsp_message({"jsonrpc": "2.0", "method": "exit"})
+        c1_reader = asyncio.StreamReader()
+        c1_reader.feed_data(exit_msg)
+        c1_reader.feed_eof()
+
+        c1_writer = MagicMock()
+        c1_writer.write = MagicMock()
+        c1_writer.drain = AsyncMock()
+        c1_writer.close = MagicMock()
+        c1_writer.wait_closed = AsyncMock()
+
+        await asyncio.wait_for(proxy._handle_client(c1_reader, c1_writer), timeout=10)
+
+        assert proxy._running is True
+        assert proxy._current_client is None
+
+        # Server reader should still be usable — feed a message and read it back
+        test_msg = make_lsp_message(
+            {"jsonrpc": "2.0", "id": 99, "result": {"test": True}}
+        )
+        server_reader.feed_data(test_msg)
+        server_reader.feed_eof()
+
+        result = await asyncio.wait_for(read_lsp_message(server_reader), timeout=2)
+        assert result is not None
+        body = parse_lsp_body(result)
+        assert body["id"] == 99
+        assert body["result"]["test"] is True
+
+
+# ── Bug 6 (P0): Queue second client instead of rejecting ─────────────────────
+
+
+class TestClientQueuing:
+    """When a client is already connected, new connections should queue
+    instead of being immediately rejected."""
+
+    @pytest.mark.asyncio
+    async def test_second_client_waits_for_first_to_disconnect(self):
+        """Second client must be served after first disconnects, not rejected."""
+        from amplifier_module_tool_lsp.proxy import LspProxyServer
+
+        proxy = LspProxyServer.__new__(LspProxyServer)
+        proxy._running = True
+        proxy._current_client = (MagicMock(), MagicMock())  # First client active
+        proxy._last_client_disconnect = time.time()
+
+        bridge_called = False
+
+        async def mock_bridge(reader, writer):
+            nonlocal bridge_called
+            bridge_called = True
+
+        proxy._bridge_client = mock_bridge
+
+        # Schedule first client to "disconnect" after 0.2s
+        async def disconnect_first():
+            await asyncio.sleep(0.2)
+            proxy._current_client = None
+
+        task = asyncio.create_task(disconnect_first())
+
+        # Second client connects
+        c_reader = asyncio.StreamReader()
+        c_writer = MagicMock()
+        c_writer.close = MagicMock()
+        c_writer.wait_closed = AsyncMock()
+
+        await asyncio.wait_for(proxy._handle_client(c_reader, c_writer), timeout=5)
+
+        await task
+
+        assert bridge_called, (
+            "Second client should be served after first disconnects, not rejected. "
+            "The proxy should queue incoming connections."
+        )
