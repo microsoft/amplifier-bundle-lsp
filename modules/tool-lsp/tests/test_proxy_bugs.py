@@ -115,6 +115,8 @@ class TestProxySurvivesDisconnect:
         proxy._initialized = True
         proxy._init_result = {"capabilities": {}}
         proxy._pending_init_id = None
+        proxy._server_messages = asyncio.Queue(maxsize=200)
+        proxy._open_documents = set()
 
         # Mock server writer
         mock_server_writer = MagicMock()
@@ -171,6 +173,8 @@ class TestProxySurvivesDisconnect:
         proxy._initialized = True
         proxy._init_result = {"capabilities": {}}
         proxy._pending_init_id = None
+        proxy._server_messages = asyncio.Queue(maxsize=200)
+        proxy._open_documents = set()
 
         # Mock server writer/reader
         mock_server_writer = MagicMock()
@@ -511,6 +515,8 @@ class TestServerForwarderNotCancelled:
         proxy._initialized = True
         proxy._init_result = {"capabilities": {}}
         proxy._pending_init_id = None
+        proxy._server_messages = asyncio.Queue(maxsize=200)
+        proxy._open_documents = set()
 
         mock_server_writer = MagicMock()
         mock_server_writer.write = MagicMock()
@@ -569,6 +575,8 @@ class TestServerForwarderNotCancelled:
         proxy._initialized = True
         proxy._init_result = {"capabilities": {}}
         proxy._pending_init_id = None
+        proxy._server_messages = asyncio.Queue(maxsize=200)
+        proxy._open_documents = set()
 
         mock_server_writer = MagicMock()
         mock_server_writer.write = MagicMock()

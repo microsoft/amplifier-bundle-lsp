@@ -109,6 +109,7 @@ class LspProxyServer:
         self._initialized = False  # Has the server been initialized?
         self._pending_init_id = None  # Request ID of in-flight initialize
         self._running = True
+        self._open_documents: set[str] = set()
 
     # ── Server subprocess ─────────────────────────────────────────────────
 
@@ -119,7 +120,7 @@ class LspProxyServer:
             *self.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=sys.stderr,
             cwd=self.workspace,
         )
         self._server_writer = self._server_process.stdin
@@ -208,6 +209,13 @@ class LspProxyServer:
         try:
             await self._bridge_client(reader, writer)
         finally:
+            # Close all documents the client had open so the server's document
+            # state stays clean for the next client (prevents duplicate-open errors)
+            try:
+                await self._close_tracked_documents()
+            except Exception:
+                pass
+
             self._current_client = None
             self._last_client_disconnect = time.time()
             log("client disconnected")
@@ -225,6 +233,16 @@ class LspProxyServer:
         Uses an event to signal disconnect instead of cancelling the server reader,
         which would corrupt the shared server stdout stream.
         """
+        # Drain stale messages from previous session before starting new forwarders.
+        # Without this, old responses/notifications get forwarded to the new client,
+        # potentially corrupting its session (e.g., stale id=1 response resolves the
+        # new client's initialize request with wrong data).
+        while not self._server_messages.empty():
+            try:
+                self._server_messages.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
         client_done = asyncio.Event()
 
         client_to_server = asyncio.create_task(
@@ -244,15 +262,22 @@ class LspProxyServer:
         client_done.set()
 
         # Wait for it to finish cleanly — give it up to 5 seconds.
-        # DO NOT cancel it — cancelling corrupts the server stdout reader
-        # because read_lsp_message may be partway through reading headers + body.
         # asyncio.wait (unlike wait_for) does NOT cancel on timeout.
         try:
             await asyncio.wait([server_to_client], timeout=5.0)
         except Exception:
             pass
-        # If still running after timeout, the task is abandoned (not cancelled).
-        # It will finish on its own when the next server message arrives.
+
+        # Cancel the forwarder if it's still running after timeout.
+        # This is safe because _forward_server_to_client reads from a Queue
+        # (not the raw server stdout stream), and Queue.get() handles
+        # cancellation cleanly without corrupting any stream framing state.
+        if not server_to_client.done():
+            server_to_client.cancel()
+            try:
+                await server_to_client
+            except asyncio.CancelledError:
+                pass
 
     async def _forward_client_to_server(self, client_reader, client_writer):
         """Read from TCP client, forward to server stdin."""
@@ -297,6 +322,16 @@ class LspProxyServer:
             if method == "initialized" and self._initialized:
                 continue
 
+            # Track document open/close for cleanup on disconnect
+            if method == "textDocument/didOpen":
+                uri = body.get("params", {}).get("textDocument", {}).get("uri")
+                if uri:
+                    self._open_documents.add(uri)
+            elif method == "textDocument/didClose":
+                uri = body.get("params", {}).get("textDocument", {}).get("uri")
+                if uri:
+                    self._open_documents.discard(uri)
+
             # Forward everything else to server
             self._server_writer.write(raw)
             await self._server_writer.drain()
@@ -332,6 +367,102 @@ class LspProxyServer:
             except (ConnectionError, OSError):
                 # Client disconnected while we were writing
                 return
+
+    async def _handle_server_request_internally(self, message: dict):
+        """Respond to server-initiated requests when no client is connected.
+
+        Mirrors the logic in server.py's _handle_server_request() — accepts all
+        requests with appropriate minimal responses so the server doesn't block.
+        """
+        request_id = message["id"]
+        method = message["method"]
+
+        if method == "workspace/configuration":
+            items = message.get("params", {}).get("items", [])
+            result = [{} for _ in items]
+        else:
+            # client/registerCapability, window/workDoneProgress/create, and
+            # any unknown method — accept with null result
+            result = None
+
+        response = make_lsp_message(
+            {"jsonrpc": "2.0", "id": request_id, "result": result}
+        )
+        self._server_writer.write(response)
+        await self._server_writer.drain()
+
+    async def _drain_queue_when_idle(self):
+        """Background task: handle server messages when no client is connected.
+
+        When a client IS connected, _forward_server_to_client() consumes the queue.
+        When no client is connected, THIS task takes over — responding to server-
+        initiated requests (so the server doesn't block) and discarding everything
+        else (notifications, stale responses).
+        """
+        while True:
+            # When a client is connected, the forwarder handles the queue.
+            # Sleep to avoid spinning, then re-check.
+            if self._current_client is not None:
+                if not self._running:
+                    return
+                await asyncio.sleep(0.5)
+                continue
+
+            # No client connected — drain the queue ourselves
+            try:
+                raw = await asyncio.wait_for(self._server_messages.get(), timeout=1.0)
+            except TimeoutError:
+                if not self._running:
+                    return
+                continue
+
+            if raw is None:
+                # Server EOF sentinel — re-queue it for _forward_server_to_client
+                # or _monitor_server to see, then exit if shutting down
+                try:
+                    self._server_messages.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
+                if not self._running:
+                    return
+                continue
+
+            # Parse and classify the message
+            body = parse_lsp_body(raw)
+            if body is None:
+                continue
+
+            # Server-initiated request: has both "method" and "id" → must respond
+            if "method" in body and "id" in body:
+                try:
+                    await self._handle_server_request_internally(body)
+                except Exception:
+                    pass
+                continue
+
+            # Everything else (notifications, stale responses) — discard silently
+
+    async def _close_tracked_documents(self):
+        """Send textDocument/didClose for all tracked open documents.
+
+        Called on client disconnect so the server's document state stays clean.
+        Without this, the next client's didOpen for the same files would be a
+        protocol violation (duplicate open) that can crash rust-analyzer.
+        """
+        for uri in self._open_documents:
+            try:
+                close_msg = make_lsp_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didClose",
+                        "params": {"textDocument": {"uri": uri}},
+                    }
+                )
+                self._server_writer.write(close_msg)
+                await self._server_writer.drain()
+            except Exception:
+                pass
+        self._open_documents.clear()
 
     # ── Idle timeout ──────────────────────────────────────────────────────
 
@@ -511,6 +642,7 @@ class LspProxyServer:
                 self._tcp_server.serve_forever(),
                 self._idle_monitor(),
                 self._monitor_server(),
+                self._drain_queue_when_idle(),
             )
 
 
