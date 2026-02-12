@@ -99,6 +99,8 @@ class LspProxyServer:
         self._server_process = None
         self._server_reader = None  # stdout
         self._server_writer = None  # stdin
+        self._server_messages: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=200)
+        self._server_reader_task: asyncio.Task | None = None
         self._tcp_server = None
         self._port = 0
         self._current_client = None  # (reader, writer) or None
@@ -123,6 +125,52 @@ class LspProxyServer:
         self._server_writer = self._server_process.stdin
         self._server_reader = self._server_process.stdout
         log(f"server started (pid={self._server_process.pid})")
+
+    # ── Persistent server stdout reader ─────────────────────────────────────
+
+    async def _read_server_stdout(self):
+        """Persistently read LSP messages from server stdout into a queue.
+
+        Runs for the entire proxy lifetime. Prevents pipe backpressure
+        regardless of whether a client is connected. Uses non-cancellable
+        reads to prevent stream corruption.
+        """
+        try:
+            while self._running:
+                raw = await read_lsp_message(self._server_reader)
+                if raw is None:
+                    break  # Server EOF
+
+                # Cache init response if applicable
+                body = parse_lsp_body(raw)
+                if (
+                    body
+                    and not self._initialized
+                    and self._pending_init_id is not None
+                    and body.get("id") == self._pending_init_id
+                    and "result" in body
+                ):
+                    self._init_result = body["result"]
+                    self._initialized = True
+                    self._pending_init_id = None
+
+                # Put in queue — if full, drop oldest to prevent memory growth
+                if self._server_messages.full():
+                    try:
+                        self._server_messages.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                await self._server_messages.put(raw)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        finally:
+            # Signal EOF to any consumer
+            try:
+                self._server_messages.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
 
     # ── TCP listener ──────────────────────────────────────────────────────
 
@@ -254,42 +302,27 @@ class LspProxyServer:
             await self._server_writer.drain()
 
     async def _forward_server_to_client(self, client_writer, client_done=None):
-        """Read from server stdout, forward to TCP client.
+        """Forward messages from server queue to TCP client.
 
-        When client_done is set, stop forwarding and return cleanly without
-        corrupting the server stdout stream.
+        Reads from _server_messages queue (not server stdout directly).
+        The queue is safe to timeout on — unlike read_lsp_message, cancelling
+        queue.get() cannot corrupt stream framing state.
         """
         while True:
-            # Check if client has disconnected before blocking on server read
+            # Check if client has disconnected before blocking on queue
             if client_done is not None and client_done.is_set():
                 return
 
-            # Read next message from server with a timeout so we can check
+            # Read next message from queue with a timeout so we can check
             # the client_done event periodically
             try:
-                raw = await asyncio.wait_for(
-                    read_lsp_message(self._server_reader), timeout=1.0
-                )
+                raw = await asyncio.wait_for(self._server_messages.get(), timeout=1.0)
             except TimeoutError:
-                # No message from server yet — loop back to check client_done
+                # No message available yet — loop back to check client_done
                 continue
 
             if raw is None:
-                return  # Server process ended
-
-            body = parse_lsp_body(raw)
-
-            # Cache initialize result using request ID correlation
-            if (
-                body
-                and not self._initialized
-                and self._pending_init_id is not None
-                and body.get("id") == self._pending_init_id
-                and "result" in body
-            ):
-                self._init_result = body["result"]
-                self._initialized = True
-                self._pending_init_id = None
+                return  # Server EOF
 
             # Forward to client (skip if client already disconnected)
             if client_done is not None and client_done.is_set():
@@ -318,12 +351,40 @@ class LspProxyServer:
     # ── Server health monitoring ──────────────────────────────────────────
 
     async def _monitor_server(self):
-        """Monitor server subprocess health — exit if server dies."""
-        if self._server_process is None:
-            return
-        await self._server_process.wait()
-        # Server exited unexpectedly
+        """Monitor server subprocess. Restart if it dies (up to 3 times)."""
+        restart_count = 0
+        max_restarts = 3
+
+        while self._running and restart_count < max_restarts:
+            if self._server_process is None:
+                return
+            await self._server_process.wait()
+
+            if not self._running:
+                return  # Intentional shutdown
+
+            restart_count += 1
+            log(f"server exited unexpectedly (restart {restart_count}/{max_restarts})")
+
+            # Restart the server
+            try:
+                await self.start_server()
+                # Restart the reader task
+                if self._server_reader_task:
+                    self._server_reader_task.cancel()
+                self._server_reader_task = asyncio.create_task(
+                    self._read_server_stdout()
+                )
+                self._initialized = False  # Next client triggers fresh init
+                self._init_result = None
+                log("server restarted successfully")
+            except Exception as e:
+                log(f"server restart failed: {e}")
+                break
+
+        # Max restarts exceeded or restart failed
         if self._running:
+            log(f"server failed after {restart_count} restarts, shutting down proxy")
             self._remove_state_file()
             if self._tcp_server:
                 self._tcp_server.close()
@@ -335,6 +396,14 @@ class LspProxyServer:
         """Gracefully shutdown server and clean up."""
         log("shutting down")
         self._running = False
+
+        # Stop the persistent reader task
+        if self._server_reader_task:
+            self._server_reader_task.cancel()
+            try:
+                await self._server_reader_task
+            except asyncio.CancelledError:
+                pass
 
         # Shutdown LSP server
         try:
@@ -407,6 +476,8 @@ class LspProxyServer:
     async def run(self):
         """Main proxy event loop."""
         await self.start_server()
+        # Start persistent reader AFTER server starts
+        self._server_reader_task = asyncio.create_task(self._read_server_stdout())
         await self.start_tcp_server()
         self._write_state_file()
 

@@ -624,6 +624,7 @@ class TestGracefulShutdown:
         proxy.language = "rust"
         proxy.workspace = Path("/tmp/project")
         proxy.state_dir = Path("/tmp/nonexistent-state")
+        proxy._server_reader_task = None
 
         # Mock everything shutdown touches
         mock_writer = MagicMock()
@@ -652,6 +653,7 @@ class TestGracefulShutdown:
         proxy.state_dir = tmp_path
         proxy._port = 12345
         proxy._server_process = MagicMock(pid=999)
+        proxy._server_reader_task = None
 
         # Write the state file first
         proxy._write_state_file()
@@ -679,6 +681,7 @@ class TestGracefulShutdown:
         proxy.language = "rust"
         proxy.workspace = Path("/tmp/project")
         proxy.state_dir = Path("/tmp/nonexistent-state")
+        proxy._server_reader_task = None
 
         mock_writer = MagicMock()
         written_data = []
@@ -745,6 +748,8 @@ class TestInitCachingFlow:
         proxy._initialized = False
         proxy._pending_init_id = None
         proxy._running = True
+        proxy._server_messages = asyncio.Queue(maxsize=200)
+        proxy._server_reader_task = None
 
         # Track what gets written to the server
         proxy._server_written = []
@@ -793,7 +798,11 @@ class TestInitCachingFlow:
 
     @pytest.mark.asyncio
     async def test_init_response_cached_by_id_correlation(self):
-        """InitializeResult should be cached using request ID correlation."""
+        """InitializeResult should be cached using request ID correlation.
+
+        Init caching now happens in _read_server_stdout (the persistent
+        reader), not in _forward_server_to_client.
+        """
         from amplifier_module_tool_lsp.proxy import make_lsp_message
 
         proxy = self._make_proxy()
@@ -813,14 +822,14 @@ class TestInitCachingFlow:
         server_reader.feed_eof()
         proxy._server_reader = server_reader
 
-        client_writer, client_written = self._make_client_writer()
-
-        await proxy._forward_server_to_client(client_writer)
+        # _read_server_stdout handles both queuing and init caching
+        await proxy._read_server_stdout()
 
         assert proxy._initialized is True
         assert proxy._init_result == {"capabilities": {"hoverProvider": True}}
-        # Should still have forwarded the response to client
-        assert len(client_written) == 1
+        # Message should also be in queue for forwarding to clients
+        raw = await proxy._server_messages.get()
+        assert raw is not None
 
     @pytest.mark.asyncio
     async def test_non_init_response_not_cached_despite_capabilities(self):
@@ -844,9 +853,8 @@ class TestInitCachingFlow:
         server_reader.feed_eof()
         proxy._server_reader = server_reader
 
-        client_writer, _ = self._make_client_writer()
-
-        await proxy._forward_server_to_client(client_writer)
+        # _read_server_stdout handles init caching — wrong ID should not cache
+        await proxy._read_server_stdout()
 
         # Should NOT have been cached — wrong ID
         assert proxy._initialized is False
