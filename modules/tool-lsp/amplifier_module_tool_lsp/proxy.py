@@ -368,15 +368,34 @@ class LspProxyServer:
 
             # Restart the server
             try:
+                # Force-clear client slot (old bridge is talking to dead server)
+                self._current_client = None
+
+                # Create fresh queue (discard stale EOF sentinels from dead server)
+                self._server_messages = asyncio.Queue(maxsize=200)
+
+                # Restart server subprocess
                 await self.start_server()
-                # Restart the reader task
+
+                # Restart the reader task for the new server's stdout
                 if self._server_reader_task:
                     self._server_reader_task.cancel()
+                    try:
+                        await self._server_reader_task
+                    except asyncio.CancelledError:
+                        pass
                 self._server_reader_task = asyncio.create_task(
                     self._read_server_stdout()
                 )
-                self._initialized = False  # Next client triggers fresh init
+
+                # Reset all init state so next client triggers fresh handshake
+                self._initialized = False
                 self._init_result = None
+                self._pending_init_id = None
+
+                # Update state file with new server PID
+                self._write_state_file()
+
                 log("server restarted successfully")
             except Exception as e:
                 log(f"server restart failed: {e}")

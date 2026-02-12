@@ -246,6 +246,7 @@ class TestMonitorServerRestart:
         mock_process.wait = AsyncMock(return_value=1)
         proxy._server_process = mock_process
         proxy.start_server = mock_start_server
+        proxy._write_state_file = MagicMock()  # stub: no real state dir
 
         try:
             await asyncio.wait_for(proxy._monitor_server(), timeout=2.0)
@@ -255,6 +256,7 @@ class TestMonitorServerRestart:
         assert start_server_called == 1, "Server should have been restarted once"
         assert proxy._initialized is False, "Init state should be reset after restart"
         assert proxy._init_result is None
+        assert proxy._pending_init_id is None
 
     @pytest.mark.asyncio
     async def test_max_restarts_exceeded(self):
@@ -280,6 +282,7 @@ class TestMonitorServerRestart:
         mock_process.wait = AsyncMock(return_value=1)
         proxy._server_process = mock_process
         proxy.start_server = mock_start_server
+        proxy._write_state_file = MagicMock()  # stub: no real state dir
 
         await proxy._monitor_server()
 
