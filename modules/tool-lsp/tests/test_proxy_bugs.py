@@ -47,6 +47,10 @@ class TestPythonPathInProxy:
         # Write a fake state file after Popen is called to satisfy the wait loop
         state_path = mgr._state_file_path("rust", Path("/tmp/ws"))
 
+        # Mock process that appears alive
+        alive_process = MagicMock()
+        alive_process.poll.return_value = None
+
         def fake_popen(*args, **kwargs):
             # Write state file so the wait loop exits
             state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +64,7 @@ class TestPythonPathInProxy:
                     }
                 )
             )
-            return MagicMock()
+            return alive_process
 
         with (
             patch("subprocess.Popen", side_effect=fake_popen) as mock_popen,
@@ -369,6 +373,10 @@ class TestProxyStderrLogging:
 
         state_path = mgr._state_file_path("rust", Path("/tmp/ws"))
 
+        # Mock process that appears alive
+        alive_process = MagicMock()
+        alive_process.poll.return_value = None
+
         def fake_popen(*args, **kwargs):
             state_path.parent.mkdir(parents=True, exist_ok=True)
             state_path.write_text(
@@ -381,7 +389,7 @@ class TestProxyStderrLogging:
                     }
                 )
             )
-            return MagicMock()
+            return alive_process
 
         with (
             patch("subprocess.Popen", side_effect=fake_popen),
@@ -415,6 +423,10 @@ class TestProxyStderrLogging:
 
         state_path = mgr._state_file_path("rust", Path("/tmp/ws"))
 
+        # Mock process that appears alive
+        alive_process = MagicMock()
+        alive_process.poll.return_value = None
+
         def fake_popen(*args, **kwargs):
             state_path.parent.mkdir(parents=True, exist_ok=True)
             state_path.write_text(
@@ -427,7 +439,7 @@ class TestProxyStderrLogging:
                     }
                 )
             )
-            return MagicMock()
+            return alive_process
 
         with (
             patch("subprocess.Popen", side_effect=fake_popen) as mock_popen,
@@ -643,3 +655,182 @@ class TestClientQueuing:
             "Second client should be served after first disconnects, not rejected. "
             "The proxy should queue incoming connections."
         )
+
+
+# ── Bug 6 (P0): Proxy startup timeout UX ────────────────────────────────────
+
+
+class TestProxyStartupFastFail:
+    """_start_proxy should detect immediate crashes within ~0.5s instead of
+    waiting 30 seconds for the state-file poll to time out."""
+
+    @staticmethod
+    def _make_dead_popen(log_msg, exit_code=1):
+        """Create a fake Popen that simulates a process dying immediately.
+
+        Writes log_msg to the log file (via the stderr kwarg) to simulate
+        what the real subprocess would do before crashing.
+        """
+        dead_process = MagicMock()
+        dead_process.poll.return_value = exit_code
+        dead_process.returncode = exit_code
+
+        def fake_popen(*args, **kwargs):
+            # The real process would write to stderr (the log file fd).
+            # Simulate that by writing directly to the file handle.
+            stderr_file = kwargs.get("stderr")
+            if stderr_file and hasattr(stderr_file, "write"):
+                stderr_file.write(log_msg)
+                stderr_file.flush()
+            return dead_process
+
+        return fake_popen, dead_process
+
+    @pytest.mark.asyncio
+    async def test_immediate_crash_raises_within_one_poll(self, tmp_path):
+        """If the proxy process exits immediately, _start_proxy should raise
+        RuntimeError with the exit code and log contents — NOT wait for the
+        full polling timeout."""
+        mgr = _make_manager()
+        mgr.STATE_DIR = tmp_path
+
+        fake_popen, _ = self._make_dead_popen(
+            "ModuleNotFoundError: No module named 'foo'\n", exit_code=1
+        )
+
+        with (
+            patch.object(LspServerManager, "STATE_DIR", tmp_path),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("asyncio.sleep", return_value=None),
+            pytest.raises(RuntimeError, match="failed to start.*exit code 1"),
+        ):
+            await mgr._start_proxy(
+                language="rust",
+                workspace=Path("/tmp/ws"),
+                server_config={"command": ["rust-analyzer"]},
+                init_options={},
+            )
+
+    @pytest.mark.asyncio
+    async def test_immediate_crash_includes_log_content(self, tmp_path):
+        """The error message should include the log file content so the user
+        (or LLM) can see what went wrong."""
+        mgr = _make_manager()
+        mgr.STATE_DIR = tmp_path
+
+        fake_popen, _ = self._make_dead_popen(
+            "ModuleNotFoundError: No module named 'foo'\n", exit_code=1
+        )
+
+        with (
+            patch.object(LspServerManager, "STATE_DIR", tmp_path),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("asyncio.sleep", return_value=None),
+            pytest.raises(RuntimeError, match="ModuleNotFoundError"),
+        ):
+            await mgr._start_proxy(
+                language="rust",
+                workspace=Path("/tmp/ws"),
+                server_config={"command": ["rust-analyzer"]},
+                init_options={},
+            )
+
+    @pytest.mark.asyncio
+    async def test_crash_during_polling_detected(self, tmp_path):
+        """If the process dies DURING the polling loop (not immediately), it
+        should still be caught on the next poll iteration."""
+        mgr = _make_manager()
+        mgr.STATE_DIR = tmp_path
+
+        # Process stays alive for initial check, alive on first poll, then dies
+        process = MagicMock()
+        process.poll.side_effect = [
+            None,
+            None,
+            2,
+        ]  # initial: alive, poll1: alive, poll2: dead
+        process.returncode = 2
+
+        def fake_popen(*args, **kwargs):
+            stderr_file = kwargs.get("stderr")
+            if stderr_file and hasattr(stderr_file, "write"):
+                stderr_file.write("Segfault or something\n")
+                stderr_file.flush()
+            return process
+
+        with (
+            patch.object(LspServerManager, "STATE_DIR", tmp_path),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("asyncio.sleep", return_value=None),
+            pytest.raises(RuntimeError, match="crashed during startup.*exit code 2"),
+        ):
+            await mgr._start_proxy(
+                language="rust",
+                workspace=Path("/tmp/ws"),
+                server_config={"command": ["rust-analyzer"]},
+                init_options={},
+            )
+
+
+class TestProxyStartupTimeout:
+    """The polling timeout should be 15 seconds (30 * 0.5s), and error
+    messages should include the log file path."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_15_seconds(self, tmp_path):
+        """The polling loop should iterate 30 times (30 * 0.5s = 15s),
+        not 60 times (30s)."""
+        mgr = _make_manager()
+        mgr.STATE_DIR = tmp_path
+
+        # Process stays alive but never writes state file
+        alive_process = MagicMock()
+        alive_process.poll.return_value = None  # always alive
+
+        sleep_count = 0
+
+        async def counting_sleep(duration):
+            nonlocal sleep_count
+            sleep_count += 1
+            # Don't actually sleep
+
+        with (
+            patch.object(LspServerManager, "STATE_DIR", tmp_path),
+            patch("subprocess.Popen", return_value=alive_process),
+            patch("asyncio.sleep", side_effect=counting_sleep),
+            pytest.raises(RuntimeError, match="15 seconds"),
+        ):
+            await mgr._start_proxy(
+                language="rust",
+                workspace=Path("/tmp/ws"),
+                server_config={"command": ["rust-analyzer"]},
+                init_options={},
+            )
+
+        # Should poll 30 times (30 * 0.5s = 15s), plus 1 initial sleep
+        # The initial sleep is the 0.5s after Popen before the first poll check
+        assert sleep_count == 31, (
+            f"Expected 31 sleeps (1 initial + 30 poll), got {sleep_count}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_timeout_error_includes_log_path(self, tmp_path):
+        """When the proxy times out, the error should mention the log path."""
+        mgr = _make_manager()
+        mgr.STATE_DIR = tmp_path
+
+        alive_process = MagicMock()
+        alive_process.poll.return_value = None
+
+        with (
+            patch.object(LspServerManager, "STATE_DIR", tmp_path),
+            patch("subprocess.Popen", return_value=alive_process),
+            patch("asyncio.sleep", return_value=None),
+            pytest.raises(RuntimeError, match="Check log at"),
+        ):
+            await mgr._start_proxy(
+                language="rust",
+                workspace=Path("/tmp/ws"),
+                server_config={"command": ["rust-analyzer"]},
+                init_options={},
+            )

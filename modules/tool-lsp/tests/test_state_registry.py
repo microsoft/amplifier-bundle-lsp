@@ -11,7 +11,7 @@ import os
 import socket
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -384,6 +384,10 @@ class TestStartProxy:
 
         import subprocess as sp
 
+        # Mock process that appears alive (poll() returns None)
+        alive_process = MagicMock()
+        alive_process.poll.return_value = None
+
         def fake_popen(args, **kwargs):
             popen_called_with["args"] = args
             popen_called_with["kwargs"] = kwargs
@@ -398,6 +402,7 @@ class TestStartProxy:
                     "proxy_pid": os.getpid(),
                 }
                 state_path.write_text(json.dumps(state))
+            return alive_process
 
         try:
             with (
@@ -441,10 +446,13 @@ class TestStartProxy:
         workspace = tmp_path / "ws"
         workspace.mkdir()
 
-        # Mock Popen to do nothing (proxy never starts)
+        # Mock Popen to return a process that stays alive but never writes state
+        alive_process = MagicMock()
+        alive_process.poll.return_value = None  # Process is alive
+
         with (
             patch.object(LspServerManager, "STATE_DIR", tmp_path),
-            patch("subprocess.Popen"),
+            patch("subprocess.Popen", return_value=alive_process),
             patch("asyncio.sleep", return_value=None),  # Speed up polling
             pytest.raises(RuntimeError, match="failed to start"),
         ):

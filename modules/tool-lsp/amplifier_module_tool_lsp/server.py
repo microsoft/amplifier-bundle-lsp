@@ -676,7 +676,7 @@ class LspServerManager:
         log_path = log_dir / f"{key}.log"
         log_file = open(log_path, "w")  # noqa: SIM115
 
-        subprocess.Popen(
+        process = subprocess.Popen(
             proxy_args,
             start_new_session=True,  # Detach from parent process group
             stdin=subprocess.DEVNULL,
@@ -688,17 +688,47 @@ class LspServerManager:
         # Child inherits the fd; parent can close its handle
         log_file.close()
 
+        # Give the process a moment to start (or die)
+        await asyncio.sleep(0.5)
+
+        # Check if it died immediately (e.g. ModuleNotFoundError, bad import)
+        if process.poll() is not None:
+            log_content = ""
+            try:
+                log_content = log_path.read_text()
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"LSP proxy for {language} failed to start (exit code {process.returncode}). "
+                f"Log: {log_content or 'no output'}"
+            )
+
         # Wait for proxy to write state file and start accepting connections
         state_path = self._state_file_path(language, workspace)
-        for _ in range(60):  # Wait up to 30 seconds (60 * 0.5s)
+        for _ in range(30):  # Wait up to 15 seconds (30 * 0.5s)
             await asyncio.sleep(0.5)
+
+            # Check if proxy process died during startup
+            if process.poll() is not None:
+                log_content = ""
+                try:
+                    log_content = log_path.read_text()
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"LSP proxy for {language} crashed during startup (exit code {process.returncode}). "
+                    f"Log: {log_content or 'no output'}"
+                )
+
+            # Check for state file
             if state_path.exists():
                 state = self._read_state(language, workspace)
                 if state:
                     return state
 
         raise RuntimeError(
-            f"LSP proxy for {language} at {workspace} failed to start within 30 seconds"
+            f"LSP proxy for {language} at {workspace} failed to start within 15 seconds. "
+            f"Check log at: {log_path}"
         )
 
     # ── Server management ────────────────────────────────────────────────
