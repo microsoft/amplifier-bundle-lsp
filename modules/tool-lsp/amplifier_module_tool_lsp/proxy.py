@@ -108,6 +108,9 @@ class LspProxyServer:
         self._init_result = None  # Cached InitializeResult
         self._initialized = False  # Has the server been initialized?
         self._pending_init_id = None  # Request ID of in-flight initialize
+        self._server_received_initialized = (
+            False  # Has server actually received "initialized"?
+        )
         self._running = True
         self._open_documents: set[str] = set()
 
@@ -318,8 +321,17 @@ class LspProxyServer:
             if method == "exit":
                 return  # Client wants to disconnect
 
-            # Swallow initialized notification if server already initialized
-            if method == "initialized" and self._initialized:
+            # Forward or swallow "initialized" notification.
+            # Only swallow if the server has ACTUALLY received one — not just
+            # because we cached the init result. If a previous client timed out
+            # before sending "initialized", the server is still waiting for it.
+            if method == "initialized":
+                if self._server_received_initialized:
+                    continue  # Server already got one — swallow duplicate
+                # Forward to server and record that it received it
+                self._server_received_initialized = True
+                self._server_writer.write(raw)
+                await self._server_writer.drain()
                 continue
 
             # Track document open/close for cleanup on disconnect
@@ -523,6 +535,7 @@ class LspProxyServer:
                 self._initialized = False
                 self._init_result = None
                 self._pending_init_id = None
+                self._server_received_initialized = False
 
                 # Update state file with new server PID
                 self._write_state_file()
