@@ -15,7 +15,6 @@ DEFAULT_MAX_HOVER_CHARS = 6000
 LIMIT_GO_TO_DEFINITION = 20  # Overloads/partial classes
 LIMIT_GO_TO_IMPLEMENTATION = 30  # Interface implementations
 LIMIT_PREPARE_CALL_HIERARCHY = 10  # Call hierarchy items
-LIMIT_PREPARE_TYPE_HIERARCHY = 10  # Type hierarchy items
 
 
 class LspOperations:
@@ -601,77 +600,6 @@ class LspOperations:
             {"item": items[0]},
         )
         return self._truncate_results(results, "outgoingCalls")
-
-    async def _prepare_type_hierarchy(
-        self, server: LspServer, file_path: str, line: int, character: int
-    ) -> list | None:
-        """Shared prepare step for supertypes/subtypes."""
-        await self._open_document(server, file_path)
-        result = await server.request(
-            "textDocument/prepareTypeHierarchy",
-            {
-                "textDocument": {"uri": Path(file_path).resolve().as_uri()},
-                "position": {"line": line - 1, "character": character - 1},
-            },
-        )
-        return result if isinstance(result, list) and result else None
-
-    async def _op_prepareTypeHierarchy(  # noqa: N802 - matches LSP operation name
-        self,
-        server: LspServer,
-        file_path: str,
-        line: int,
-        character: int,
-        query: str | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        """Prepare type hierarchy at position."""
-        await self._open_document(server, file_path)
-        result = await server.request(
-            "textDocument/prepareTypeHierarchy",
-            self._text_document_position(file_path, line, character),
-        )
-        return self._truncate_results(
-            result, "prepareTypeHierarchy", LIMIT_PREPARE_TYPE_HIERARCHY
-        )
-
-    async def _op_supertypes(
-        self,
-        server: LspServer,
-        file_path: str,
-        line: int,
-        character: int,
-        query: str | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        """Find supertypes (implemented traits, supertraits) of type at position."""
-        items = await self._prepare_type_hierarchy(server, file_path, line, character)
-        if not items:
-            return {
-                "results": [],
-                "message": "supertypes: No type hierarchy item at this position",
-            }
-        result = await server.request("typeHierarchy/supertypes", {"item": items[0]})
-        return self._truncate_results(result, "supertypes")
-
-    async def _op_subtypes(
-        self,
-        server: LspServer,
-        file_path: str,
-        line: int,
-        character: int,
-        query: str | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        """Find subtypes (implementors, sub-structs) of type at position."""
-        items = await self._prepare_type_hierarchy(server, file_path, line, character)
-        if not items:
-            return {
-                "results": [],
-                "message": "subtypes: No type hierarchy item at this position",
-            }
-        result = await server.request("typeHierarchy/subtypes", {"item": items[0]})
-        return self._truncate_results(result, "subtypes")
 
     async def _op_inlayHints(  # noqa: N802 - matches LSP operation name
         self,

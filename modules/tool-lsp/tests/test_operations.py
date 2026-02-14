@@ -3,7 +3,6 @@
 import pytest
 
 from amplifier_module_tool_lsp.operations import (
-    LIMIT_PREPARE_TYPE_HIERARCHY,
     LspOperations,
 )
 
@@ -173,327 +172,6 @@ class TestUriToPath:
     def test_encoded_special_chars(self, ops):
         result = ops._uri_to_path("file:///home/user/%23special/test.py")
         assert result == "/home/user/#special/test.py"
-
-
-# ── Task 2: Type Hierarchy Operations ───────────────────────────────────────
-
-
-class ScriptedFakeServer:
-    """Fake LspServer that returns scripted responses per-method."""
-
-    def __init__(self, responses=None):
-        self.language = "rust"
-        self.notifications: list[tuple[str, dict]] = []
-        self.requests: list[tuple[str, dict]] = []
-        self._responses = responses or {}
-
-    async def notify(self, method: str, params: dict):
-        self.notifications.append((method, params))
-
-    async def request(self, method: str, params: dict):
-        self.requests.append((method, params))
-        return self._responses.get(method)
-
-
-SAMPLE_TYPE_HIERARCHY_ITEM = {
-    "name": "Dog",
-    "kind": 5,
-    "uri": "file:///project/src/main.rs",
-    "range": {
-        "start": {"line": 5, "character": 0},
-        "end": {"line": 5, "character": 10},
-    },
-    "selectionRange": {
-        "start": {"line": 5, "character": 7},
-        "end": {"line": 5, "character": 10},
-    },
-}
-
-SAMPLE_SUPERTYPE = {
-    "name": "Animal",
-    "kind": 11,
-    "uri": "file:///project/src/main.rs",
-    "range": {
-        "start": {"line": 0, "character": 0},
-        "end": {"line": 0, "character": 15},
-    },
-    "selectionRange": {
-        "start": {"line": 0, "character": 6},
-        "end": {"line": 0, "character": 12},
-    },
-}
-
-SAMPLE_SUBTYPE = {
-    "name": "Dog",
-    "kind": 5,
-    "uri": "file:///project/src/main.rs",
-    "range": {
-        "start": {"line": 5, "character": 0},
-        "end": {"line": 5, "character": 10},
-    },
-    "selectionRange": {
-        "start": {"line": 5, "character": 7},
-        "end": {"line": 5, "character": 10},
-    },
-}
-
-
-class TestTypeHierarchyConstant:
-    """LIMIT_PREPARE_TYPE_HIERARCHY should exist and equal 10."""
-
-    def test_limit_constant_value(self):
-        assert LIMIT_PREPARE_TYPE_HIERARCHY == 10
-
-
-class TestPrepareTypeHierarchyHelper:
-    """_prepare_type_hierarchy shared helper returns raw list or None."""
-
-    @pytest.fixture
-    def ops(self):
-        return LspOperations(server_manager=None)
-
-    @pytest.mark.asyncio
-    async def test_returns_list_when_server_returns_items(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("struct Dog;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": [SAMPLE_TYPE_HIERARCHY_ITEM],
-            }
-        )
-        result = await ops._prepare_type_hierarchy(server, str(rs_file), 1, 8)
-        assert result == [SAMPLE_TYPE_HIERARCHY_ITEM]
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_server_returns_none(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("let x = 1;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": None,
-            }
-        )
-        result = await ops._prepare_type_hierarchy(server, str(rs_file), 1, 5)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_server_returns_empty_list(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("let x = 1;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": [],
-            }
-        )
-        result = await ops._prepare_type_hierarchy(server, str(rs_file), 1, 5)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_sends_correct_lsp_method_and_position(self, ops, tmp_path):
-        """Position should be converted from 1-based to 0-based."""
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("struct Dog;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": [SAMPLE_TYPE_HIERARCHY_ITEM],
-            }
-        )
-        await ops._prepare_type_hierarchy(server, str(rs_file), 5, 10)
-
-        method, params = server.requests[0]
-        assert method == "textDocument/prepareTypeHierarchy"
-        assert params["position"]["line"] == 4  # 5 - 1
-        assert params["position"]["character"] == 9  # 10 - 1
-
-
-class TestOpPrepareTypeHierarchy:
-    """_op_prepareTypeHierarchy wraps result with _truncate_results."""
-
-    @pytest.fixture
-    def ops(self):
-        return LspOperations(server_manager=None)
-
-    @pytest.mark.asyncio
-    async def test_returns_truncated_result_dict(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("struct Dog;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": [SAMPLE_TYPE_HIERARCHY_ITEM],
-            }
-        )
-        result = await ops._op_prepareTypeHierarchy(server, str(rs_file), 1, 8, None)
-        assert isinstance(result, dict)
-        assert result["results"] == [SAMPLE_TYPE_HIERARCHY_ITEM]
-        assert result["total_count"] == 1
-        assert result["truncated"] is False
-
-    @pytest.mark.asyncio
-    async def test_truncates_at_limit(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("struct Dog;\n")
-        items = [{"name": f"Type{i}", "kind": 5} for i in range(15)]
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": items,
-            }
-        )
-        result = await ops._op_prepareTypeHierarchy(server, str(rs_file), 1, 8, None)
-        assert result["truncated"] is True
-        assert result["total_count"] == 15
-        assert len(result["results"]) == 10  # LIMIT_PREPARE_TYPE_HIERARCHY
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_for_none(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("let x = 1;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": None,
-            }
-        )
-        result = await ops._op_prepareTypeHierarchy(server, str(rs_file), 1, 5, None)
-        assert result["results"] == []
-        assert result["total_count"] == 0
-
-
-class TestOpSupertypes:
-    """_op_supertypes: two-step prepare+request pattern."""
-
-    @pytest.fixture
-    def ops(self):
-        return LspOperations(server_manager=None)
-
-    @pytest.mark.asyncio
-    async def test_returns_supertypes(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("struct Dog;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": [SAMPLE_TYPE_HIERARCHY_ITEM],
-                "typeHierarchy/supertypes": [SAMPLE_SUPERTYPE],
-            }
-        )
-        result = await ops._op_supertypes(server, str(rs_file), 1, 8, None)
-        assert result["results"] == [SAMPLE_SUPERTYPE]
-        assert result["total_count"] == 1
-
-    @pytest.mark.asyncio
-    async def test_returns_message_when_prepare_empty(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("let x = 1;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": None,
-            }
-        )
-        result = await ops._op_supertypes(server, str(rs_file), 1, 5, None)
-        assert result["results"] == []
-        assert "No type hierarchy item" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_sends_first_item_to_supertypes_request(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("struct Dog;\n")
-        item1 = {"name": "Dog", "kind": 5}
-        item2 = {"name": "Cat", "kind": 5}
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": [item1, item2],
-                "typeHierarchy/supertypes": [],
-            }
-        )
-        await ops._op_supertypes(server, str(rs_file), 1, 8, None)
-
-        # Second request should be typeHierarchy/supertypes with items[0]
-        method, params = server.requests[1]
-        assert method == "typeHierarchy/supertypes"
-        assert params["item"] == item1
-
-    @pytest.mark.asyncio
-    async def test_no_supertypes_request_when_prepare_empty(self, ops, tmp_path):
-        """When prepare returns nothing, should NOT send supertypes request."""
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("let x = 1;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": None,
-            }
-        )
-        await ops._op_supertypes(server, str(rs_file), 1, 5, None)
-
-        # Only the prepare request should have been sent
-        methods = [m for m, _ in server.requests]
-        assert "typeHierarchy/supertypes" not in methods
-
-
-class TestOpSubtypes:
-    """_op_subtypes: two-step prepare+request pattern."""
-
-    @pytest.fixture
-    def ops(self):
-        return LspOperations(server_manager=None)
-
-    @pytest.mark.asyncio
-    async def test_returns_subtypes(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("trait Animal {}\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": [SAMPLE_TYPE_HIERARCHY_ITEM],
-                "typeHierarchy/subtypes": [SAMPLE_SUBTYPE],
-            }
-        )
-        result = await ops._op_subtypes(server, str(rs_file), 1, 7, None)
-        assert result["results"] == [SAMPLE_SUBTYPE]
-        assert result["total_count"] == 1
-
-    @pytest.mark.asyncio
-    async def test_returns_message_when_prepare_empty(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("let x = 1;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": None,
-            }
-        )
-        result = await ops._op_subtypes(server, str(rs_file), 1, 5, None)
-        assert result["results"] == []
-        assert "No type hierarchy item" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_sends_first_item_to_subtypes_request(self, ops, tmp_path):
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("trait Animal {}\n")
-        item1 = {"name": "Animal", "kind": 11}
-        item2 = {"name": "Pet", "kind": 11}
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": [item1, item2],
-                "typeHierarchy/subtypes": [],
-            }
-        )
-        await ops._op_subtypes(server, str(rs_file), 1, 7, None)
-
-        # Second request should be typeHierarchy/subtypes with items[0]
-        method, params = server.requests[1]
-        assert method == "typeHierarchy/subtypes"
-        assert params["item"] == item1
-
-    @pytest.mark.asyncio
-    async def test_no_subtypes_request_when_prepare_empty(self, ops, tmp_path):
-        """When prepare returns nothing, should NOT send subtypes request."""
-        rs_file = tmp_path / "main.rs"
-        rs_file.write_text("let x = 1;\n")
-        server = ScriptedFakeServer(
-            responses={
-                "textDocument/prepareTypeHierarchy": None,
-            }
-        )
-        await ops._op_subtypes(server, str(rs_file), 1, 5, None)
-
-        methods = [m for m, _ in server.requests]
-        assert "typeHierarchy/subtypes" not in methods
 
 
 # ── Task 7: _truncate_custom_result ──────────────────────────────────────────
@@ -733,22 +411,6 @@ class TestOpCustomRequest:
         assert params["position"] == custom_pos
 
     @pytest.mark.asyncio
-    async def test_request_exception_returns_error(self, ops, tmp_path):
-        """Server exceptions should be caught and returned as structured error."""
-        server = CustomFakeServer(error=RuntimeError("connection lost"))
-        py_file = tmp_path / "test.py"
-        py_file.write_text("x = 1\n")
-
-        result = await ops._op_customRequest(
-            server,
-            file_path=str(py_file),
-            customMethod="test/failing",
-        )
-        assert "error" in result
-        assert "connection lost" in result["error"]
-        assert result["_method"] == "test/failing"
-
-    @pytest.mark.asyncio
     async def test_string_truncation_in_dict_result(self, ops, tmp_path):
         """Long string values in dict results should be truncated."""
         huge_expansion = "x" * 20000
@@ -796,3 +458,47 @@ class TestOpCustomRequest:
         method, params = server.requests[0]
         assert params["query"] == "foo ==>> bar"
         assert params["parseOnly"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_auto_inject_when_custom_params_provided(self, ops, tmp_path):
+        """When customParams is non-empty, should NOT auto-inject textDocument/position.
+
+        Some custom methods expect flat params (e.g., {uri: "..."}) not nested
+        {textDocument: {uri: "..."}}. Auto-injecting mangles the param shape.
+        """
+        server = CustomFakeServer(response=None)
+        py_file = tmp_path / "test.py"
+        py_file.write_text("x = 1\n")
+
+        await ops._op_customRequest(
+            server,
+            file_path=str(py_file),
+            line=5,
+            character=10,
+            customMethod="rust-analyzer/viewFileText",
+            customParams={"uri": py_file.resolve().as_uri()},
+        )
+        method, params = server.requests[0]
+        # Should only contain what the caller passed — no auto-injected keys
+        assert "textDocument" not in params
+        assert "position" not in params
+        assert "uri" in params
+
+    @pytest.mark.asyncio
+    async def test_request_exception_raises_not_returns_error(self, ops, tmp_path):
+        """Server exceptions should propagate (not be caught as success).
+
+        Bug: _op_customRequest catches exceptions and returns {error: "..."}
+        as a normal dict, which tool.py wraps as ToolResult(success=True).
+        Fix: re-raise so tool.py catches it and sets success=False.
+        """
+        server = CustomFakeServer(error=RuntimeError("server crashed"))
+        py_file = tmp_path / "test.py"
+        py_file.write_text("x = 1\n")
+
+        with pytest.raises(RuntimeError, match="server crashed"):
+            await ops._op_customRequest(
+                server,
+                file_path=str(py_file),
+                customMethod="test/failing",
+            )

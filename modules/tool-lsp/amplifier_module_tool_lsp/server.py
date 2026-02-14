@@ -29,7 +29,6 @@ CLIENT_CAPABILITIES = {
         },
         "implementation": {"dynamicRegistration": True},
         "callHierarchy": {"dynamicRegistration": True},
-        "typeHierarchy": {"dynamicRegistration": True},
         "diagnostic": {"dynamicRegistration": True},
         "rename": {
             "dynamicRegistration": True,

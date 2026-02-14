@@ -29,10 +29,6 @@ class LspTool:
         "prepareCallHierarchy",
         "incomingCalls",
         "outgoingCalls",
-        # Type hierarchy
-        "prepareTypeHierarchy",
-        "supertypes",
-        "subtypes",
         # Verification
         "diagnostics",
         # Refactoring
@@ -60,9 +56,6 @@ class LspTool:
     # Extended operations that require capability declaration.
     # If a language config has no capabilities map at all, all are assumed supported.
     EXTENDED_OPS = {
-        "prepareTypeHierarchy",
-        "supertypes",
-        "subtypes",
         "diagnostics",
         "rename",
         "codeAction",
@@ -79,9 +72,6 @@ class LspTool:
         "prepareCallHierarchy",
         "incomingCalls",
         "outgoingCalls",
-        "prepareTypeHierarchy",
-        "supertypes",
-        "subtypes",
         "rename",
         "codeAction",
         "inlayHints",
@@ -162,15 +152,6 @@ class LspTool:
             "  goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol,\n"
             "  goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls",
         ]
-
-        # Type hierarchy — only if any type hierarchy ops available
-        type_hier_ops = [
-            op
-            for op in ["prepareTypeHierarchy", "supertypes", "subtypes"]
-            if op in available
-        ]
-        if type_hier_ops:
-            sections.append(f"TYPE HIERARCHY operations:\n  {', '.join(type_hier_ops)}")
 
         # Verification
         if "diagnostics" in available:
@@ -256,14 +237,6 @@ class LspTool:
             "workspaceSymbol, goToImplementation.",
             "Call hierarchy: prepareCallHierarchy, incomingCalls, outgoingCalls.",
         ]
-
-        type_hier = [
-            op
-            for op in ["prepareTypeHierarchy", "supertypes", "subtypes"]
-            if op in available
-        ]
-        if type_hier:
-            parts.append(f"Type hierarchy: {', '.join(type_hier)}.")
 
         if "diagnostics" in available:
             parts.append("Verification: diagnostics.")
