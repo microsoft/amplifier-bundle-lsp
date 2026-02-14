@@ -56,10 +56,6 @@ class TestOperationsOrdering:
         "prepareCallHierarchy",
         "incomingCalls",
         "outgoingCalls",
-        # Type hierarchy
-        "prepareTypeHierarchy",
-        "supertypes",
-        "subtypes",
         # Verification
         "diagnostics",
         # Refactoring
@@ -72,7 +68,7 @@ class TestOperationsOrdering:
     ]
 
     def test_operations_count(self, tool):
-        assert len(tool.OPERATIONS) == 17
+        assert len(tool.OPERATIONS) == 14
 
     def test_operations_order_matches_logical_grouping(self, tool):
         assert tool.OPERATIONS == self.EXPECTED_ORDER
@@ -86,9 +82,6 @@ class TestToolDescription:
 
     def test_description_contains_navigation_header(self, tool):
         assert "NAVIGATION" in tool.description
-
-    def test_description_contains_type_hierarchy_header(self, tool):
-        assert "TYPE HIERARCHY" in tool.description
 
     def test_description_contains_verification_header(self, tool):
         assert "VERIFICATION" in tool.description
@@ -131,9 +124,6 @@ class TestToolDescription:
     def test_description_lists_all_new_operations(self, tool):
         desc = tool.description
         for op in [
-            "prepareTypeHierarchy",
-            "supertypes",
-            "subtypes",
             "diagnostics",
             "rename",
             "codeAction",
@@ -153,7 +143,6 @@ class TestOperationDescription:
         desc = tool.input_schema["properties"]["operation"]["description"]
         assert "Navigation" in desc
         assert "Call hierarchy" in desc
-        assert "Type hierarchy" in desc
         assert "Verification" in desc
         assert "Refactoring" in desc
         assert "Inspection" in desc
@@ -230,18 +219,6 @@ class TestLspGeneralContext:
     def test_context_mentions_inlay_hints(self, context_content):
         assert "inlayHints" in context_content
 
-    def test_context_mentions_type_hierarchy(self, context_content):
-        assert (
-            "prepareTypeHierarchy" in context_content
-            or "Type Hierarchy" in context_content
-        )
-
-    def test_context_mentions_subtypes(self, context_content):
-        assert "subtypes" in context_content
-
-    def test_context_mentions_supertypes(self, context_content):
-        assert "supertypes" in context_content
-
     def test_context_mentions_custom_request(self, context_content):
         assert "customRequest" in context_content
 
@@ -285,14 +262,13 @@ class TestLspGeneralContext:
                 "rename",
                 "codeAction",
                 "inlayHints",
-                "subtypes",
             ]
             if term in context_content
         )
-        assert new_heuristics_present >= 4, "Missing new heuristics in context"
+        assert new_heuristics_present >= 3, "Missing new heuristics in context"
 
     def test_context_all_operations_listed(self, context_content):
-        """All 17 operations should appear somewhere in the context."""
+        """All 14 operations should appear somewhere in the context."""
         all_ops = [
             "goToDefinition",
             "findReferences",
@@ -303,9 +279,6 @@ class TestLspGeneralContext:
             "prepareCallHierarchy",
             "incomingCalls",
             "outgoingCalls",
-            "prepareTypeHierarchy",
-            "supertypes",
-            "subtypes",
             "diagnostics",
             "rename",
             "codeAction",

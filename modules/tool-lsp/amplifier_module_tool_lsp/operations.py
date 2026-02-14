@@ -693,26 +693,24 @@ class LspOperations:
         if not method:
             return {"error": "customRequest requires 'customMethod' parameter"}
 
-        params = kwargs.get("customParams", {})
+        params = kwargs.get("customParams") or {}
 
-        # If file_path provided, open document and add textDocument to params if not already present
+        # Open document if file_path provided (for server indexing),
+        # but only auto-inject textDocument/position if caller didn't
+        # provide customParams (some methods expect different param shapes).
         if file_path:
             await self._open_document(server, file_path)
-            uri = Path(file_path).resolve().as_uri()
-            if "textDocument" not in params:
+
+        caller_provided_params = bool(kwargs.get("customParams"))
+        if not caller_provided_params:
+            # Auto-build params from file_path/line/character
+            if file_path:
+                uri = Path(file_path).resolve().as_uri()
                 params["textDocument"] = {"uri": uri}
+            if line and character:
+                params["position"] = {"line": line - 1, "character": character - 1}
 
-        # If position provided, add it to params if not already present
-        if line and character and "position" not in params:
-            params["position"] = {"line": line - 1, "character": character - 1}
-
-        try:
-            result = await server.request(method, params)
-        except Exception as e:
-            return {
-                "error": f"Custom request '{method}' failed: {e!s}",
-                "_method": method,
-            }
+        result = await server.request(method, params)
 
         # Format result based on type
         if result is None:

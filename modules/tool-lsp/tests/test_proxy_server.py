@@ -420,7 +420,6 @@ class TestLspServerUsesClientCapabilities:
         assert "documentSymbol" in td
         assert "implementation" in td
         assert "callHierarchy" in td
-        assert "typeHierarchy" in td
         assert "diagnostic" in td
         assert "rename" in td
         assert "codeAction" in td

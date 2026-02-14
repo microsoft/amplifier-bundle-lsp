@@ -55,9 +55,6 @@ class TestPositionValidation:
         "prepareCallHierarchy",
         "incomingCalls",
         "outgoingCalls",
-        "prepareTypeHierarchy",
-        "supertypes",
-        "subtypes",
         "rename",
         "codeAction",
         "inlayHints",
@@ -154,9 +151,6 @@ class TestNewOperations:
     """New operations should appear in OPERATIONS list and schema enum."""
 
     NEW_OPS = [
-        "prepareTypeHierarchy",
-        "supertypes",
-        "subtypes",
         "diagnostics",
         "rename",
         "codeAction",

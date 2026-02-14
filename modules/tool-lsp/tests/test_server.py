@@ -483,9 +483,6 @@ class TestCapabilities:
         td = CLIENT_CAPABILITIES["textDocument"]
         assert td["documentSymbol"]["hierarchicalDocumentSymbolSupport"] is True
 
-    def test_type_hierarchy_capability(self):
-        assert "typeHierarchy" in CLIENT_CAPABILITIES["textDocument"]
-
     def test_rename_capability_with_prepare(self):
         rename = CLIENT_CAPABILITIES["textDocument"]["rename"]
         assert rename["prepareSupport"] is True

@@ -141,13 +141,6 @@ class TestExtendedOpsFilteredByCapabilities:
         ]:
             assert op in enum, f"{op} should be in enum when capability is true"
 
-    def test_undeclared_extended_ops_hidden(self, rust_like_tool):
-        enum = rust_like_tool.input_schema["properties"]["operation"]["enum"]
-        for op in ["prepareTypeHierarchy", "supertypes", "subtypes"]:
-            assert op not in enum, (
-                f"{op} should NOT be in enum when not in capabilities"
-            )
-
     def test_only_declared_ops_from_extended(self, minimal_caps_tool):
         enum = minimal_caps_tool.input_schema["properties"]["operation"]["enum"]
         assert "diagnostics" in enum
@@ -156,9 +149,6 @@ class TestExtendedOpsFilteredByCapabilities:
             "codeAction",
             "inlayHints",
             "customRequest",
-            "prepareTypeHierarchy",
-            "supertypes",
-            "subtypes",
         ]:
             assert op not in enum, (
                 f"{op} should not appear with only diagnostics capability"
@@ -220,29 +210,10 @@ class TestMultiLanguageUnion:
     def test_undeclared_in_all_still_hidden(self, multi_lang_tool):
         enum = multi_lang_tool.input_schema["properties"]["operation"]["enum"]
         # Neither language declares these
-        for op in ["prepareTypeHierarchy", "supertypes", "subtypes", "customRequest"]:
+        for op in ["customRequest"]:
             assert op not in enum, (
                 f"{op} not declared by any language, should be hidden"
             )
-
-
-# ── Type hierarchy hidden for Rust ────────────────────────────────────
-
-
-class TestTypeHierarchyHiddenForRust:
-    """Rust config without type hierarchy ops → all 3 hidden."""
-
-    def test_prepare_type_hierarchy_hidden(self, rust_like_tool):
-        enum = rust_like_tool.input_schema["properties"]["operation"]["enum"]
-        assert "prepareTypeHierarchy" not in enum
-
-    def test_supertypes_hidden(self, rust_like_tool):
-        enum = rust_like_tool.input_schema["properties"]["operation"]["enum"]
-        assert "supertypes" not in enum
-
-    def test_subtypes_hidden(self, rust_like_tool):
-        enum = rust_like_tool.input_schema["properties"]["operation"]["enum"]
-        assert "subtypes" not in enum
 
 
 # ── Description excludes hidden ops ───────────────────────────────────
@@ -250,13 +221,6 @@ class TestTypeHierarchyHiddenForRust:
 
 class TestDescriptionExcludesHiddenOps:
     """Description text should not mention operations that are hidden."""
-
-    def test_no_type_hierarchy_section_for_rust(self, rust_like_tool):
-        desc = rust_like_tool.description
-        assert "TYPE HIERARCHY" not in desc
-        assert "prepareTypeHierarchy" not in desc
-        assert "supertypes" not in desc
-        assert "subtypes" not in desc
 
     def test_has_sections_for_enabled_ops(self, rust_like_tool):
         desc = rust_like_tool.description
@@ -287,15 +251,14 @@ class TestExecuteRejectsUnavailableOp:
     """Calling a hidden operation gives a helpful error message."""
 
     @pytest.mark.asyncio
-    async def test_rejects_hidden_op(self, rust_like_tool, tmp_path):
-        rs_file = tmp_path / "test.rs"
-        rs_file.write_text("fn main() {}\n")
-        result = await rust_like_tool.execute(
+    async def test_rejects_hidden_op(self, minimal_caps_tool, tmp_path):
+        test_file = tmp_path / "test.test"
+        test_file.write_text("x = 1\n")
+        result = await minimal_caps_tool.execute(
             {
-                "operation": "prepareTypeHierarchy",
-                "file_path": str(rs_file),
-                "line": 1,
-                "character": 4,
+                "operation": "customRequest",
+                "file_path": str(test_file),
+                "customMethod": "test/method",
             }
         )
         assert result.success is False
@@ -303,15 +266,16 @@ class TestExecuteRejectsUnavailableOp:
         assert "not supported" in msg
 
     @pytest.mark.asyncio
-    async def test_rejects_with_available_list(self, rust_like_tool, tmp_path):
-        rs_file = tmp_path / "test.rs"
-        rs_file.write_text("fn main() {}\n")
-        result = await rust_like_tool.execute(
+    async def test_rejects_with_available_list(self, minimal_caps_tool, tmp_path):
+        test_file = tmp_path / "test.test"
+        test_file.write_text("x = 1\n")
+        result = await minimal_caps_tool.execute(
             {
-                "operation": "subtypes",
-                "file_path": str(rs_file),
+                "operation": "rename",
+                "file_path": str(test_file),
                 "line": 1,
-                "character": 4,
+                "character": 1,
+                "newName": "y",
             }
         )
         assert result.success is False

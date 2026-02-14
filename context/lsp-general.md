@@ -27,7 +27,6 @@ You have access to the LSP (Language Server Protocol) tool for code intelligence
 - "Rename this symbol everywhere" → `rename`
 - "What can I do to fix this error?" → `codeAction`
 - "What are the inferred types here?" → `inlayHints`
-- "What implements this interface/trait?" → `subtypes`
 
 LSP gives **semantic** results (actual code relationships). Grep gives **text** matches (may include comments, strings, similar names). For code navigation, semantic wins.
 
@@ -39,21 +38,18 @@ LSP gives **semantic** results (actual code relationships). Grep gives **text** 
 3. **goToDefinition** — Jump to where something is defined
 4. **incomingCalls** / **outgoingCalls** — Trace call graphs
 
-**TYPE RELATIONSHIPS:**
-5. **prepareTypeHierarchy** / **supertypes** / **subtypes** — Navigate type hierarchies
-
 **VERIFICATION (after editing code):**
-6. **diagnostics** — Get compiler errors and warnings for a file
+5. **diagnostics** — Get compiler errors and warnings for a file
 
 **REFACTORING:**
-7. **rename** — Cross-file semantic rename (returns edits to review)
-8. **codeAction** — Get suggested fixes and refactorings
+6. **rename** — Cross-file semantic rename (returns edits to review)
+7. **codeAction** — Get suggested fixes and refactorings
 
 **INSPECTION:**
-9. **inlayHints** — Get inferred types for a range of code
+8. **inlayHints** — Get inferred types for a range of code
 
 **EXTENSIONS:**
-10. **customRequest** — Send server-specific methods (see language docs)
+9. **customRequest** — Send server-specific methods (see language docs)
 
 ## After Editing Code
 
@@ -81,9 +77,6 @@ Example: `customRequest(customMethod="server/someExtension", customParams={...})
 - **prepareCallHierarchy**: Get call hierarchy item at position
 - **incomingCalls**: Find functions that call the target function
 - **outgoingCalls**: Find functions called by the target function
-- **prepareTypeHierarchy**: Get type hierarchy item at position
-- **supertypes**: Find parent types (base classes, implemented interfaces)
-- **subtypes**: Find child types (subclasses, implementors)
 - **diagnostics**: Get compiler errors and warnings for a file
 - **rename**: Semantic cross-file rename (returns edits, does not apply them)
 - **codeAction**: Get suggested fixes and refactorings for a range
