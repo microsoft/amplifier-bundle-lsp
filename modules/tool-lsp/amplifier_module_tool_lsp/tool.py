@@ -47,7 +47,6 @@ class LspTool:
         "hover",
         "documentSymbol",
         "workspaceSymbol",
-        "goToImplementation",
         "prepareCallHierarchy",
         "incomingCalls",
         "outgoingCalls",
@@ -61,6 +60,7 @@ class LspTool:
         "codeAction",
         "inlayHints",
         "customRequest",
+        "goToImplementation",
     }
 
     # Operations that require line/character position params
@@ -103,7 +103,7 @@ class LspTool:
     def _get_available_operations(self) -> list[str]:
         """Get operations available based on configured language capabilities.
 
-        Base operations (9) are always available. Extended operations only appear
+        Base operations (8) are always available. Extended operations only appear
         if at least one configured language declares them in its capabilities map.
         If a language has no capabilities map, all operations are assumed available.
         """
@@ -144,13 +144,16 @@ class LspTool:
         available = set(self._get_available_operations())
         lang_names = ", ".join(self._languages.keys()) if self._languages else "none"
 
+        # Navigation — goToImplementation conditionally included
+        impl_prefix = (
+            "goToImplementation, " if "goToImplementation" in available else ""
+        )
         sections = [
             f"Interact with Language Server Protocol servers for code intelligence. "
             f"Configured languages: {lang_names}.",
-            # Navigation — always present (base ops)
             "NAVIGATION operations:\n"
             "  goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol,\n"
-            "  goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls",
+            f"  {impl_prefix}prepareCallHierarchy, incomingCalls, outgoingCalls",
         ]
 
         # Verification
@@ -231,10 +234,11 @@ class LspTool:
 
     def _build_operation_description(self, available: set[str]) -> str:
         """Build the operation enum description based on available operations."""
+        impl_suffix = ", goToImplementation" if "goToImplementation" in available else ""
         parts = [
             "The LSP operation to perform.",
             "Navigation: goToDefinition, findReferences, hover, documentSymbol, "
-            "workspaceSymbol, goToImplementation.",
+            f"workspaceSymbol{impl_suffix}.",
             "Call hierarchy: prepareCallHierarchy, incomingCalls, outgoingCalls.",
         ]
 

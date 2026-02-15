@@ -24,6 +24,7 @@ def rust_like_tool():
                         "codeAction": True,
                         "inlayHints": True,
                         "customRequest": True,
+                        "goToImplementation": True,
                     },
                 }
             }
@@ -99,7 +100,7 @@ def minimal_caps_tool():
 
 
 class TestBaseOpsAlwaysAvailable:
-    """Base 9 operations always appear regardless of capabilities config."""
+    """Base 8 operations always appear regardless of capabilities config."""
 
     BASE_OPS = [
         "goToDefinition",
@@ -107,7 +108,6 @@ class TestBaseOpsAlwaysAvailable:
         "hover",
         "documentSymbol",
         "workspaceSymbol",
-        "goToImplementation",
         "prepareCallHierarchy",
         "incomingCalls",
         "outgoingCalls",
@@ -138,6 +138,7 @@ class TestExtendedOpsFilteredByCapabilities:
             "codeAction",
             "inlayHints",
             "customRequest",
+            "goToImplementation",
         ]:
             assert op in enum, f"{op} should be in enum when capability is true"
 
@@ -149,6 +150,7 @@ class TestExtendedOpsFilteredByCapabilities:
             "codeAction",
             "inlayHints",
             "customRequest",
+            "goToImplementation",
         ]:
             assert op not in enum, (
                 f"{op} should not appear with only diagnostics capability"
@@ -210,7 +212,7 @@ class TestMultiLanguageUnion:
     def test_undeclared_in_all_still_hidden(self, multi_lang_tool):
         enum = multi_lang_tool.input_schema["properties"]["operation"]["enum"]
         # Neither language declares these
-        for op in ["customRequest"]:
+        for op in ["customRequest", "goToImplementation"]:
             assert op not in enum, (
                 f"{op} not declared by any language, should be hidden"
             )
@@ -242,6 +244,14 @@ class TestDescriptionExcludesHiddenOps:
     def test_schema_description_excludes_hidden_categories(self, rust_like_tool):
         desc = rust_like_tool.input_schema["properties"]["operation"]["description"]
         assert "Type hierarchy" not in desc
+
+    def test_gotoimplementation_hidden_when_not_declared(self, minimal_caps_tool):
+        desc = minimal_caps_tool.description
+        assert "goToImplementation" not in desc
+
+    def test_gotoimplementation_shown_when_declared(self, rust_like_tool):
+        desc = rust_like_tool.description
+        assert "goToImplementation" in desc
 
 
 # ── Execute rejects unavailable operation ─────────────────────────────

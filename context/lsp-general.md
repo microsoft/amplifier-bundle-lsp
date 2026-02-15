@@ -73,7 +73,7 @@ Example: `customRequest(customMethod="server/someExtension", customParams={...})
 - **hover**: Get documentation and type info for a symbol
 - **documentSymbol**: Get all symbols in a document (may be slow)
 - **workspaceSymbol**: Search for symbols across the workspace (needs indexing time)
-- **goToImplementation**: Find implementations of interfaces/abstract methods
+- **goToImplementation**: Find implementations of interfaces/abstract methods (not supported by all servers — declared per-language via capabilities)
 - **prepareCallHierarchy**: Get call hierarchy item at position
 - **incomingCalls**: Find functions that call the target function
 - **outgoingCalls**: Find functions called by the target function
