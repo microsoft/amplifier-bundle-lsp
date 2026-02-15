@@ -24,7 +24,12 @@ def test_python_config_merges_with_core():
         core_config = yaml.safe_load(f)
 
     # Load Python bundle behavior
-    python_path = Path(__file__).parent.parent.parent / "amplifier-bundle-lsp-python" / "behaviors" / "python-lsp.yaml"
+    python_path = (
+        Path(__file__).parent.parent.parent
+        / "amplifier-bundle-python-dev"
+        / "behaviors"
+        / "python-lsp.yaml"
+    )
     with open(python_path) as f:
         python_config = yaml.safe_load(f)
 
@@ -36,14 +41,20 @@ def test_python_config_merges_with_core():
     assert core_tool_config["languages"] == {}, "Core should have empty languages dict"
 
     # Verify Python has python language config
-    assert "python" in python_tool_config["languages"], "Python bundle should define python language"
+    assert "python" in python_tool_config["languages"], (
+        "Python bundle should define python language"
+    )
 
     # Deep merge should result in Python language being present
     merged = deep_merge(core_tool_config, python_tool_config)
 
     assert "python" in merged["languages"], "Merged config should have python language"
-    assert ".py" in merged["languages"]["python"]["extensions"], "Python should handle .py files"
-    assert "pyright-langserver" in merged["languages"]["python"]["server"]["command"], "Should use pyright"
+    assert ".py" in merged["languages"]["python"]["extensions"], (
+        "Python should handle .py files"
+    )
+    assert "pyright-langserver" in merged["languages"]["python"]["server"]["command"], (
+        "Should use pyright"
+    )
 
     print("✓ Deep merge test passed!")
     print(f"  Core languages: {core_tool_config['languages']}")
