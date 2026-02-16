@@ -100,14 +100,13 @@ def minimal_caps_tool():
 
 
 class TestBaseOpsAlwaysAvailable:
-    """Base 8 operations always appear regardless of capabilities config."""
+    """Base 7 operations always appear regardless of capabilities config."""
 
     BASE_OPS = [
         "goToDefinition",
         "findReferences",
         "hover",
         "documentSymbol",
-        "workspaceSymbol",
         "prepareCallHierarchy",
         "incomingCalls",
         "outgoingCalls",
