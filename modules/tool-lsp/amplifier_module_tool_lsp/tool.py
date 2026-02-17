@@ -371,21 +371,21 @@ class LspTool:
 
         # Validate operation
         if operation not in self.OPERATIONS:
+            error_msg = f"Unknown operation: {operation}. Valid: {self._get_available_operations()}"
             return ToolResult(
                 success=False,
-                error={
-                    "message": f"Unknown operation: {operation}. Valid: {self._get_available_operations()}"
-                },
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Check if operation is available for configured languages
         available = self._get_available_operations()
         if operation not in available:
+            error_msg = f"Operation '{operation}' is not supported by the configured language server(s). Available: {available}"
             return ToolResult(
                 success=False,
-                error={
-                    "message": f"Operation '{operation}' is not supported by the configured language server(s). Available: {available}"
-                },
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Per-operation parameter validation
@@ -397,33 +397,39 @@ class LspTool:
 
         # Validate required parameters — file_path is optional for some operations
         if not file_path and operation not in self.FILE_PATH_OPTIONAL_OPS:
+            error_msg = "file_path is required"
             return ToolResult(
                 success=False,
-                error={"message": "file_path is required"},
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Validate position for operations that need it
         if operation in self.POSITION_REQUIRED_OPS:
             if line is None or character is None:
+                error_msg = f"line and character position required for {operation}"
                 return ToolResult(
                     success=False,
-                    error={
-                        "message": f"line and character position required for {operation}"
-                    },
+                    output=error_msg,
+                    error={"message": error_msg},
                 )
 
         # Per-operation parameter validation (after position check)
         if operation == "rename" and not arguments.get("newName"):
+            error_msg = "rename requires 'newName' parameter"
             return ToolResult(
                 success=False,
-                error={"message": "rename requires 'newName' parameter"},
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Return early for not-yet-implemented operations
         if operation in self._NOT_YET_IMPLEMENTED_OPS:
+            error_msg = f"Operation '{operation}' is not yet implemented"
             return ToolResult(
                 success=False,
-                error={"message": f"Operation '{operation}' is not yet implemented"},
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Default position values for operations that don't need them
@@ -435,9 +441,11 @@ class LspTool:
         # Handle file_path-optional operations — use first configured language + cwd
         if operation in self.FILE_PATH_OPTIONAL_OPS and not file_path:
             if not self._languages:
+                error_msg = "No languages configured"
                 return ToolResult(
                     success=False,
-                    error={"message": "No languages configured"},
+                    output=error_msg,
+                    error={"message": error_msg},
                 )
             language = next(iter(self._languages))
             lang_config = self._languages[language]
@@ -448,11 +456,11 @@ class LspTool:
             language = self._detect_language(file_path)
             if not language:
                 configured = list(self._languages.keys()) or ["none"]
+                error_msg = f"No LSP support configured for {file_path}. Configured languages: {', '.join(configured)}"
                 return ToolResult(
                     success=False,
-                    error={
-                        "message": f"No LSP support configured for {file_path}. Configured languages: {', '.join(configured)}"
-                    },
+                    output=error_msg,
+                    error={"message": error_msg},
                 )
 
             # Get language configuration
@@ -471,11 +479,14 @@ class LspTool:
             )
         except Exception as e:
             install_hint = lang_config["server"].get("install_hint", "")
+            error_detail = str(e) or type(e).__name__
+            error_msg = (
+                f"Failed to start {language} LSP server: {error_detail}. {install_hint}"
+            )
             return ToolResult(
                 success=False,
-                error={
-                    "message": f"Failed to start {language} LSP server: {e}. {install_hint}"
-                },
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Execute the operation
@@ -496,9 +507,11 @@ class LspTool:
             return ToolResult(success=True, output=result)
         except Exception as e:
             error_msg = str(e) or type(e).__name__
+            error_msg = f"LSP operation failed: {error_msg}"
             return ToolResult(
                 success=False,
-                error={"message": f"LSP operation failed: {error_msg}"},
+                output=error_msg,
+                error={"message": error_msg},
             )
 
     async def cleanup(self):
