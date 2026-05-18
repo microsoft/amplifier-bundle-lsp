@@ -1,5 +1,6 @@
 bundle:
   name: behavior-lsp-core
+  version: 0.2.0
 
 tools:
   - module: tool-lsp
@@ -12,8 +13,10 @@ tools:
       max_retries: 3
 
 context:
-  include:
-    - lsp:context/lsp-general.md
+  include: []
+  # lsp-general.md moved to context-sink pattern: loads via code-navigator agent
+  # delegation only, reducing always-on token cost per foundation BUNDLE_GUIDE.md
+  # § "Behavior context.include Policy"
 
 agents:
   include:
