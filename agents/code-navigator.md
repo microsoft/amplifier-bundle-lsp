@@ -58,3 +58,4 @@ Other agents with tool-lsp can handle simple single-operation lookups directly (
 - Note any LSP limitations encountered (e.g., "goToImplementation not supported by this server")
 
 @foundation:context/LANGUAGE_PHILOSOPHY.md
+@lsp:context/lsp-general.md
