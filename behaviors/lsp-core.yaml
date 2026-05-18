@@ -1,5 +1,6 @@
 bundle:
   name: behavior-lsp-core
+  version: 0.2.0
 
 tools:
   - module: tool-lsp
@@ -11,10 +12,9 @@ tools:
       timeout_seconds: 30
       max_retries: 3
 
-context:
-  include:
-    - lsp:context/lsp-general.md
-
 agents:
   include:
     - lsp:code-navigator
+
+# lsp-general.md is loaded via the code-navigator agent body (context-sink pattern).
+# Delegate to code-navigator for any non-trivial LSP work — it carries the full primer.
