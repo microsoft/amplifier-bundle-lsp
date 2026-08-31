@@ -300,6 +300,32 @@ class TestDrainQueueWhenIdle:
         # Message should still be in the queue (not consumed)
         assert not proxy._server_messages.empty()
 
+    @pytest.mark.asyncio
+    async def test_eof_sentinel_is_dropped_not_requeued(self):
+        """The server EOF sentinel must be consumed, not put straight back.
+
+        Re-queueing it makes the very next get() return it again, and nothing
+        in that path awaits anything that yields -- Queue.get() on a non-empty
+        queue returns without suspending, and wait_for() around it adds no
+        yield either. The result is a tight non-yielding loop that starves the
+        event loop (so _monitor_server never runs and its restart cap never
+        fires) and leaks one asyncio TimerHandle per iteration, since cancelled
+        timers are only reclaimed inside the loop iteration that never happens.
+        Measured on the buggy version: ~1.6M retained handles and 405 MB RSS in
+        three seconds.
+        """
+        proxy = _make_proxy()
+        proxy._current_client = None
+
+        await proxy._server_messages.put(None)
+        proxy._running = False
+
+        await proxy._drain_queue_when_idle()
+
+        assert proxy._server_messages.empty(), (
+            "EOF sentinel was re-queued; _drain_queue_when_idle will spin on it"
+        )
+
 
 # ── Bug 3a: Abandoned forwarder tasks cancelled ─────────────────────────────────
 
