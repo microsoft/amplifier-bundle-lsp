@@ -215,7 +215,7 @@ class LspServer:
                 header = await self._process.stdout.readline()
                 if not header:
                     _finish_response_reader(
-                        self, "LSP response stream closed; reconnect before requesting more work."
+                        self, "LSP response stream closed; create a new LSP client/session before requesting more work."
                     )
                     break
 
@@ -263,7 +263,7 @@ class LspServer:
                 # and starving the event loop, including cancellation and timers.
                 _finish_response_reader(
                     self,
-                    f"LSP response stream failed ({type(exc).__name__}); reconnect before requesting more work.",
+                    f"LSP response stream failed ({type(exc).__name__}); create a new LSP client/session before requesting more work.",
                 )
                 break
 
@@ -439,7 +439,7 @@ class ProxyLspServer:
                 header = await self._reader.readline()
                 if not header:
                     _finish_response_reader(
-                        self, "LSP response stream closed; reconnect before requesting more work."
+                        self, "LSP response stream closed; create a new LSP client/session before requesting more work."
                     )
                     break
 
@@ -487,7 +487,7 @@ class ProxyLspServer:
                 # and starving the event loop, including cancellation and timers.
                 _finish_response_reader(
                     self,
-                    f"LSP response stream failed ({type(exc).__name__}); reconnect before requesting more work.",
+                    f"LSP response stream failed ({type(exc).__name__}); create a new LSP client/session before requesting more work.",
                 )
                 break
 
