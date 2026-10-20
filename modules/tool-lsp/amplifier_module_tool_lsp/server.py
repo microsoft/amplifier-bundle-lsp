@@ -77,6 +77,17 @@ CLIENT_CAPABILITIES = {
 }
 
 
+def _finish_response_reader(server, reason: str) -> None:
+    """A failed stream is terminal; never retry its retained exception in a loop."""
+    server._reader_failure = reason
+    pending = list(server._pending.values())
+    server._pending.clear()
+    for future in pending:
+        if not future.done():
+            # Use a fresh exception, not the transport exception and its traceback.
+            future.set_exception(ConnectionError(reason))
+
+
 class LspServer:
     """Wrapper around an LSP server process."""
 
@@ -93,6 +104,7 @@ class LspServer:
         self._request_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._reader_task: asyncio.Task | None = None
+        self._reader_failure: str | None = None
         self._default_timeout = timeout
         self._diagnostics_cache: dict[str, list] = {}
 
@@ -165,9 +177,15 @@ class LspServer:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
 
-        await self._send(message)
-
-        return await asyncio.wait_for(future, timeout=self._default_timeout)
+        try:
+            await self._send(message)
+            return await asyncio.wait_for(future, timeout=self._default_timeout)
+        finally:
+            self._pending.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                future.exception()  # Retrieve a failure even if sending also failed.
 
     async def notify(self, method: str, params: dict[str, Any]):
         """Send a notification (no response expected)."""
@@ -180,6 +198,8 @@ class LspServer:
 
     async def _send(self, message: dict):
         """Send a JSON-RPC message to the server."""
+        if getattr(self, "_reader_failure", None):
+            raise ConnectionError(self._reader_failure)
         assert self._process.stdin is not None, "Process stdin not available"
         content = json.dumps(message)
         header = f"Content-Length: {len(content)}\r\n\r\n"
@@ -194,6 +214,9 @@ class LspServer:
                 # Read header
                 header = await self._process.stdout.readline()
                 if not header:
+                    _finish_response_reader(
+                        self, "LSP response stream closed; create a new LSP client/session before requesting more work."
+                    )
                     break
 
                 # Parse content length
@@ -232,9 +255,17 @@ class LspServer:
                     # else: unrecognized message, drop
 
             except asyncio.CancelledError:
+                _finish_response_reader(self, "LSP response reader stopped.")
                 break
-            except Exception:
-                continue
+            except Exception as exc:
+                # StreamReader retains transport errors. Retrying synchronously
+                # re-raises that same object, growing its traceback indefinitely
+                # and starving the event loop, including cancellation and timers.
+                _finish_response_reader(
+                    self,
+                    f"LSP response stream failed ({type(exc).__name__}); create a new LSP client/session before requesting more work.",
+                )
+                break
 
     async def _handle_server_request(self, message: dict):
         """Respond to server-initiated requests."""
@@ -337,6 +368,7 @@ class ProxyLspServer:
         self._request_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._reader_task: asyncio.Task | None = None
+        self._reader_failure: str | None = None
         self._default_timeout = timeout
         self._diagnostics_cache: dict[str, list] = {}
 
@@ -371,9 +403,15 @@ class ProxyLspServer:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
 
-        await self._send(message)
-
-        return await asyncio.wait_for(future, timeout=self._default_timeout)
+        try:
+            await self._send(message)
+            return await asyncio.wait_for(future, timeout=self._default_timeout)
+        finally:
+            self._pending.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                future.exception()  # Retrieve a failure even if sending also failed.
 
     async def notify(self, method: str, params: dict[str, Any]):
         """Send a notification (no response expected)."""
@@ -386,6 +424,8 @@ class ProxyLspServer:
 
     async def _send(self, message: dict):
         """Send a JSON-RPC message over TCP."""
+        if getattr(self, "_reader_failure", None):
+            raise ConnectionError(self._reader_failure)
         content = json.dumps(message)
         header = f"Content-Length: {len(content)}\r\n\r\n"
         self._writer.write((header + content).encode())
@@ -398,6 +438,9 @@ class ProxyLspServer:
                 # Read header
                 header = await self._reader.readline()
                 if not header:
+                    _finish_response_reader(
+                        self, "LSP response stream closed; create a new LSP client/session before requesting more work."
+                    )
                     break
 
                 # Parse content length
@@ -436,9 +479,17 @@ class ProxyLspServer:
                     # else: unrecognized message, drop
 
             except asyncio.CancelledError:
+                _finish_response_reader(self, "LSP response reader stopped.")
                 break
-            except Exception:
-                continue
+            except Exception as exc:
+                # StreamReader retains transport errors. Retrying synchronously
+                # re-raises that same object, growing its traceback indefinitely
+                # and starving the event loop, including cancellation and timers.
+                _finish_response_reader(
+                    self,
+                    f"LSP response stream failed ({type(exc).__name__}); create a new LSP client/session before requesting more work.",
+                )
+                break
 
     async def _initialize(self, init_options: dict[str, Any]):
         """Send initialize request to LSP server (via proxy)."""

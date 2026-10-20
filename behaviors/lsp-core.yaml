@@ -12,9 +12,12 @@ tools:
       timeout_seconds: 30
       max_retries: 3
 
+context:
+  include: []
+  # lsp-general.md moved to context-sink pattern: loads via code-navigator agent
+  # delegation only, reducing always-on token cost per foundation BUNDLE_GUIDE.md
+  # § "Behavior context.include Policy"
+
 agents:
   include:
     - lsp:code-navigator
-
-# lsp-general.md is loaded via the code-navigator agent body (context-sink pattern).
-# Delegate to code-navigator for any non-trivial LSP work — it carries the full primer.

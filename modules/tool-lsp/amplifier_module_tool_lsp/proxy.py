@@ -119,12 +119,25 @@ class LspProxyServer:
     async def start_server(self):
         """Start the LSP server subprocess."""
         log(f"starting server: {self.command} in {self.workspace}")
+
+        # Drop PYTHONPATH before spawning the language server. LspServerManager
+        # sets PYTHONPATH=os.pathsep.join(sys.path) so this proxy can import
+        # amplifier_module_tool_lsp, but that path is amplifier's own Python
+        # stdlib. The language server is frequently a different interpreter —
+        # pyright-langserver's shebang is /usr/bin/python3 — and loading one
+        # version's _sre against another version's re/_compiler.py fails at
+        # import with "AssertionError: SRE module mismatch". The server has no
+        # business inheriting amplifier's import path.
+        server_env = os.environ.copy()
+        server_env.pop("PYTHONPATH", None)
+
         self._server_process = await asyncio.create_subprocess_exec(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=sys.stderr,
             cwd=self.workspace,
+            env=server_env,
         )
         self._server_writer = self._server_process.stdin
         self._server_reader = self._server_process.stdout
@@ -429,14 +442,20 @@ class LspProxyServer:
                 continue
 
             if raw is None:
-                # Server EOF sentinel — re-queue it for _forward_server_to_client
-                # or _monitor_server to see, then exit if shutting down
-                try:
-                    self._server_messages.put_nowait(None)
-                except asyncio.QueueFull:
-                    pass
+                # Server EOF. Do NOT re-queue the sentinel here. This branch only
+                # runs while no client is connected, so there is no forwarder
+                # waiting to observe it — and putting it straight back guarantees
+                # the very next get() returns it again, producing a tight spin.
+                # That spin pegs a core, starves _monitor_server (so the restart
+                # cap never fires and the proxy never gives up), and leaks one
+                # asyncio TimerHandle per iteration via wait_for(), which the
+                # event loop's scheduled-timer heap never reclaims.
+                # Drop the sentinel and idle instead; _monitor_server installs a
+                # fresh queue when it restarts the server, and this loop re-reads
+                # self._server_messages on each pass so it picks that up.
                 if not self._running:
                     return
+                await asyncio.sleep(0.5)
                 continue
 
             # Parse and classify the message
